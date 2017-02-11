@@ -117,33 +117,6 @@ cpu0_continue:
 	ldr lr, [lr]
 	bx lr
 
-# r0 = color
-draw_fb:
-	ldr r1, =0x21200000
-	ldr r2, =0x240000
-	add r3, r1, r2
-	1:
-		str r0, [r1]
-		add r1, #4
-		cmp r1, r3
-		blt 1b
-
-	# Delay
-	mov r0, #0
-	mov r4, #0x20
-	2:
-		mov r1, #0
-		3:
-			add r1, #1
-			cmp r1, r2
-			blt 3b
-		add r0, #1
-		cmp r0, r4
-		blt 2b
-
-	bx lr
-
-
 # Variables
 cpu_sync: .word 0, 0, 0, 0
 

@@ -52,7 +52,7 @@ static int payload_trampoline_thread(SceSize args, void *argp)
 {
 	int flags;
 
-	LOG("CPU %ld entered the trampoline thread.\n", get_cpu_id());
+	ksceKernelDelayThread(1000);
 
 	/*
 	 * Set up the exception vectors to make them jump to our payload.
@@ -61,7 +61,7 @@ static int payload_trampoline_thread(SceSize args, void *argp)
 	 * The Vita has Security Extensions, so VBAR is used.
 	 */
 	flags = ksceKernelCpuDisableInterrupts();
-	set_vbar(0x00000000);
+	set_vbar((unsigned long)SCRATCHPAD_ADDR);
 	ksceKernelCpuEnableInterrupts(flags);
 
 	while (1)
@@ -85,12 +85,6 @@ int module_start(SceSize argc, const void *args)
 	log_reset();
 	LOG("Linux loader by xerpi\n");
 	LOG("Payload size: 0x%08X\n", payload_size);
-
-	/*
-	 * Map the scratchpad to VA 0x00000000-0x00007FFF.
-	 */
-	map_scratchpad();
-	LOG("Scratchpad mapped\n");
 
 	/*
 	 * Load the Linux files (kernel image and device tree blob).
@@ -122,14 +116,19 @@ int module_start(SceSize argc, const void *args)
 	LOG("DTB load vaddr: 0x%08X\n", (unsigned int)dtb_vaddr);
 	LOG("DTB load paddr: 0x%08lX\n", dtb_paddr);
 	LOG("DTB size: 0x%08X\n", dtb_size);
-
 	LOG("\n");
+
+	/*
+	 * Map the scratchpad to VA 0x00000000-0x00007FFF.
+	 */
+	map_scratchpad();
+	LOG("Scratchpad mapped\n");
 
 	/*
 	 * Copy the payload (including exception vectors) to the scratchpad.
 	 */
 	ksceKernelCpuUnrestrictedMemcpy(SCRATCHPAD_ADDR, payload_addr, payload_size);
-	ksceKernelCpuDcacheWritebackRange(SCRATCHPAD_ADDR, payload_size);
+	ksceKernelCpuDcacheAndL2WritebackInvalidateRange(SCRATCHPAD_ADDR, payload_size);
 	ksceKernelCpuIcacheAndL2WritebackInvalidateRange(SCRATCHPAD_ADDR, payload_size);
 
 	/*
@@ -153,6 +152,7 @@ int module_start(SceSize argc, const void *args)
 		goto error_map_framebuffer;
 	}
 	LOG("Framebuffer mapped\n");
+	LOG("\n");
 
 	/*
 	 * Start a thread for each CPU.
@@ -400,7 +400,6 @@ int map_framebuffer(void)
 	LOG("Framebuffer vaddr: 0x%08X\n", (uintptr_t)fb_addr);
 	LOG("Framebuffer paddr: 0x%08lX\n", get_paddr((uintptr_t)fb_addr));
 	LOG("Framebuffer size: 0x%08X\n", fb_size);
-	LOG("\n");
 
 	memset(&fb, 0, sizeof(fb));
 	fb.size        = sizeof(fb);
