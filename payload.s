@@ -35,8 +35,8 @@ _stub_interrupt_vector_handler:
 	subs pc, lr, #4
 
 payload_code:
-	# Disable interrupts
-	cpsid if
+	# Disable interrupts and enter SVC mode
+	cpsid if, #0x13
 
 	# DACR unrestricted
 	ldr r0, =0xFFFFFFFF
