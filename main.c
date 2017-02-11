@@ -101,7 +101,6 @@ int module_start(SceSize argc, const void *args)
 	LOG("Linux load vaddr: 0x%08X\n", (unsigned int)linux_vaddr);
 	LOG("Linux load paddr: 0x%08lX\n", linux_paddr);
 	LOG("Linux size: 0x%08X\n", linux_size);
-
 	LOG("\n");
 
 	ret = load_file(DTB_FILENAME, &dtb_uid, &dtb_vaddr, &dtb_size);
@@ -326,7 +325,12 @@ int alloc_phycont(unsigned int size, SceUID *uid, void **addr)
 
 	mem_size = ALIGN(size, 4096);
 
-	mem_uid = ksceKernelAllocMemBlock("phycont", 0x30808006, mem_size, NULL);
+	SceKernelAllocMemBlockKernelOpt opt;
+	memset(&opt, 0, sizeof(opt));
+	opt.size = sizeof(opt);
+	opt.attr = 0x200004;
+	opt.alignment = 0x1000;
+	mem_uid = ksceKernelAllocMemBlock("phycont", 0x30808006, mem_size, &opt);
 	if (mem_uid < 0)
 		return mem_uid;
 

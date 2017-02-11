@@ -79,6 +79,12 @@ cpu0_continue:
 	bic r0, #0b101
 	mcr p15, 0, r0, c1, c0, 0
 
+	# Disable private timer and watchdog
+	ldr r0, =0x1A002000
+	mov r1, #0
+	str r1, [r0, #(0x0600 + 0x08)]
+	str r1, [r0, #(0x0600 + 0x28)]
+
 	# Unlock all L2 cache lines
 	ldr r0, =0x1A002000
 	ldr r1, =0xFFFF
