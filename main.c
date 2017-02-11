@@ -26,7 +26,6 @@ static const unsigned int payload_size = (unsigned int)&_binary_payload_bin_size
 static const void *const payload_addr = (void *)&_binary_payload_bin_start;
 
 static unsigned long get_cpu_id(void);
-static unsigned long get_vector_base_address(void);
 static unsigned long get_ttbr0(void);
 static unsigned long get_ttbcr(void);
 static unsigned long get_paddr(unsigned long vaddr);
@@ -47,6 +46,12 @@ struct payload_args {
 
 static int payload_trampoline_thread(SceSize args, void *argp)
 {
+	unsigned int cpu_id;
+
+	cpu_id = get_cpu_id();
+
+	LOG("CPU %d entered the trampoline thread\n", cpu_id);
+
 	/*
 	 * Disable IRQs and FIQs
 	 */
@@ -162,7 +167,7 @@ int module_start(SceSize argc, const void *args)
 	payload_args.dtb_paddr = dtb_paddr;
 
 	ksceKernelCpuUnrestrictedMemcpy(0x00000000, &payload_args, sizeof(payload_args));
-	ksceKernelCpuDcacheAndL2WritebackRange((void *)payload_addr, payload_size);
+	ksceKernelCpuDcacheAndL2WritebackRange((void *)0x00000000, payload_size);
 
 	/*
 	 * Map the framebuffer.
@@ -173,21 +178,6 @@ int module_start(SceSize argc, const void *args)
 		goto error_map_framebuffer;
 	}
 	LOG("Framebuffer mapped\n");
-
-	/*
-	 * Hook the IRQ vector handler and make it jump to the payload
-	 */
-	/*unsigned long irq_vector_addr = get_vector_base_address() + 0x18;
-
-	#define ARM_BRANCH(cur, dst) ((0b1110 << 28) | (0b101 << 25) | (0b0 << 24) | (((dst) - ((cur) + 8)) >> 2))
-
-	unsigned long irq_vector_value = ARM_BRANCH(irq_vector_addr, (unsigned long)&payload_trampoline_thread);
-
-	ksceKernelCpuUnrestrictedMemcpy((void *)irq_vector_addr, &irq_vector_value, sizeof(irq_vector_value));
-	ksceKernelCpuDcacheAndL2WritebackRange((void *)irq_vector_addr, sizeof(irq_vector_value));
-
-	while (1)
-		ksceKernelDelayThread(1000);*/
 
 	int i;
 	for (i = 0; i < 4; i++) {
@@ -227,15 +217,6 @@ unsigned long get_cpu_id(void)
 	asm volatile("mrc p15, 0, %0, c0, c0, 5\n" : "=r"(mpidr));
 
 	return mpidr & 3;
-}
-
-unsigned long get_vector_base_address(void)
-{
-	unsigned long address;
-
-	asm volatile("mrc p15, 0, %0, c12, c0, 0\n" : "=r"(address));
-
-	return address;
 }
 
 unsigned long get_ttbr0(void)
