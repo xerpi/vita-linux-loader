@@ -7,9 +7,32 @@
 	.global _start
 _start:
 
+# This is loaded at address 0, and the exception vectors are configured to be there
+_exception_vectors_table:
+	ldr pc, _reset_h
+	ldr pc, _undefined_instruction_vector_h
+	ldr pc, _software_interrupt_vector_h
+	ldr pc, _prefetch_abort_vector_h
+	ldr pc, _data_abort_vector_h
+	ldr pc, _reserved_handler_h
+	ldr pc, _interrupt_vector_h
+	ldr pc, _fast_interrupt_vector_h
+
+_reset_h:                           .word payload_code
+_undefined_instruction_vector_h:    .word _stub_interrupt_vector_handler
+_software_interrupt_vector_h:       .word _stub_interrupt_vector_handler
+_prefetch_abort_vector_h:           .word _stub_interrupt_vector_handler
+_data_abort_vector_h:               .word _stub_interrupt_vector_handler
+_reserved_handler_h:                .word _stub_interrupt_vector_handler
+_interrupt_vector_h:                .word payload_code
+_fast_interrupt_vector_h:           .word _stub_interrupt_vector_handler
+
 # Payload args
 arg_kernel_paddr: .word 0
 arg_dtb_paddr: .word 0
+
+_stub_interrupt_vector_handler:
+	subs pc, lr, #4
 
 payload_code:
 	# Disable interrupts
@@ -93,6 +116,33 @@ cpu0_continue:
 	ldr lr, =arg_kernel_paddr
 	ldr lr, [lr]
 	bx lr
+
+# r0 = color
+draw_fb:
+	ldr r1, =0x21200000
+	ldr r2, =0x240000
+	add r3, r1, r2
+	1:
+		str r0, [r1]
+		add r1, #4
+		cmp r1, r3
+		blt 1b
+
+	# Delay
+	mov r0, #0
+	mov r4, #0x20
+	2:
+		mov r1, #0
+		3:
+			add r1, #1
+			cmp r1, r2
+			blt 3b
+		add r0, #1
+		cmp r0, r4
+		blt 2b
+
+	bx lr
+
 
 # Variables
 cpu_sync: .word 0, 0, 0, 0

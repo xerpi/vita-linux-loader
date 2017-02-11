@@ -13,6 +13,8 @@ void _start() __attribute__ ((weak, alias ("module_start")));
 #define LINUX_FILENAME "ux0:/linux/zImage"
 #define DTB_FILENAME "ux0:/linux/vita.dtb"
 
+#define SCRATCHPAD_ADDR ((void *)0x00000000)
+#define EXCEPTION_VECTORS_SIZE 0x20
 #define SCREEN_PITCH 1024
 #define SCREEN_W 960
 #define SCREEN_H 544
@@ -26,6 +28,7 @@ static const unsigned int payload_size = (unsigned int)&_binary_payload_bin_size
 static const void *const payload_addr = (void *)&_binary_payload_bin_start;
 
 static unsigned long get_cpu_id(void);
+static void set_vbar(unsigned long vbar);
 static unsigned long get_ttbr0(void);
 static unsigned long get_ttbcr(void);
 static unsigned long get_paddr(unsigned long vaddr);
@@ -44,55 +47,28 @@ struct payload_args {
 	unsigned long dtb_paddr;
 } __attribute__((packed));
 
+
 static int payload_trampoline_thread(SceSize args, void *argp)
 {
-	unsigned int cpu_id;
+	int flags;
 
-	cpu_id = get_cpu_id();
-
-	LOG("CPU %d entered the trampoline thread\n", cpu_id);
+	LOG("CPU %ld entered the trampoline thread.\n", get_cpu_id());
 
 	/*
-	 * Disable IRQs and FIQs
+	 * Set up the exception vectors to make them jump to our payload.
+	 * SCTLR.V is already 0 (Low exception vectors, base address 0x00000000)
+	 * SCTLR.VE is already 0 (Use the FIQ and IRQ vectors from the vector table)
+	 * The Vita has Security Extensions, so VBAR is used.
 	 */
-	asm volatile("cpsid if\n");
+	flags = ksceKernelCpuDisableInterrupts();
+	set_vbar(0x00000000);
+	ksceKernelCpuEnableInterrupts(flags);
 
-	/*
-	 * Map the scratchpad to VA 0x00000000-0x00007FFF.
-	 */
-	map_scratchpad();
+	while (1)
+		ksceKernelDelayThread(1000);
 
-	/*
-	 * Jump to the payload
-	 */
-	asm volatile(
-		"mov r0, #0\n"
-		"mov r1, #0xFFFFFFFF\n"
-		/* Data sync barrier */
-		"dsb\n"
-		/* DACR unrestricted */
-		"mcr p15, 0, r1, c3, c0, 0\n"
-		/* TLB invalidate */
-		"mcr p15, 0, r0, c8, c6, 0\n"
-		"mcr p15, 0, r0, c8, c5, 0\n"
-		"mcr p15, 0, r0, c8, c7, 0\n"
-		"mcr p15, 0, r0, c8, c3, 0\n"
-		/* Branch predictor invalidate all */
-		"mcr p15, 0, r0, c7, c5, 6\n"
-		/* Branch predictor invalidate all (IS) */
-		"mcr p15, 0, r0, c7, c1, 6\n"
-		/* Instruction cache invalidate all (PoU) */
-		"mcr p15, 0, r0, c7, c5, 0\n"
-		/* Instruction cache invalidate all (PoU, IS) */
-		"mcr p15, 0, r0, c7, c1, 0\n"
-		/* Instruction barrier */
-		"mcr p15, 0, r0, c7, c5, 4\n"
-		"mov lr, %0\n"
-		"bx lr\n"
-		: : "r"(0x00000000 + sizeof(struct payload_args)) : "r0", "r1");
 	return 0;
 }
-
 
 int module_start(SceSize argc, const void *args)
 {
@@ -115,16 +91,6 @@ int module_start(SceSize argc, const void *args)
 	 */
 	map_scratchpad();
 	LOG("Scratchpad mapped\n");
-
-	/*
-	 * Copy the payload to the scratchpad.
-	 */
-	ksceKernelCpuUnrestrictedMemcpy(0x00000000, payload_addr, payload_size);
-	ksceKernelCpuDcacheWritebackRange((void *)payload_addr, payload_size);
-	ksceKernelCpuIcacheAndL2WritebackInvalidateRange((void *)payload_addr, payload_size);
-	LOG("Payload copied to the scratchpad\n");
-
-	LOG("\n");
 
 	/*
 	 * Load the Linux files (kernel image and device tree blob).
@@ -160,14 +126,23 @@ int module_start(SceSize argc, const void *args)
 	LOG("\n");
 
 	/*
-	 * Setup the payload arguments.
+	 * Copy the payload (including exception vectors) to the scratchpad.
+	 */
+	ksceKernelCpuUnrestrictedMemcpy(SCRATCHPAD_ADDR, payload_addr, payload_size);
+	ksceKernelCpuDcacheWritebackRange(SCRATCHPAD_ADDR, payload_size);
+	ksceKernelCpuIcacheAndL2WritebackInvalidateRange(SCRATCHPAD_ADDR, payload_size);
+
+	/*
+	 * Copy the payload arguments.
 	 */
 	struct payload_args payload_args;
 	payload_args.kernel_paddr = linux_paddr;
 	payload_args.dtb_paddr = dtb_paddr;
 
-	ksceKernelCpuUnrestrictedMemcpy(0x00000000, &payload_args, sizeof(payload_args));
-	ksceKernelCpuDcacheAndL2WritebackRange((void *)0x00000000, payload_size);
+	ksceKernelCpuUnrestrictedMemcpy(SCRATCHPAD_ADDR + EXCEPTION_VECTORS_SIZE,
+		&payload_args, sizeof(payload_args));
+	ksceKernelCpuDcacheAndL2WritebackRange(SCRATCHPAD_ADDR + EXCEPTION_VECTORS_SIZE,
+		payload_size);
 
 	/*
 	 * Map the framebuffer.
@@ -179,6 +154,9 @@ int module_start(SceSize argc, const void *args)
 	}
 	LOG("Framebuffer mapped\n");
 
+	/*
+	 * Start a thread for each CPU.
+	 */
 	int i;
 	for (i = 0; i < 4; i++) {
 		SceUID thid = ksceKernelCreateThread("trampoline",
@@ -187,6 +165,9 @@ int module_start(SceSize argc, const void *args)
 		ksceKernelStartThread(thid, 0, NULL);
 	}
 
+	/*
+	 * Wait forever...
+	 */
 	while (1)
 		ksceKernelDelayThread(1000);
 
@@ -217,6 +198,20 @@ unsigned long get_cpu_id(void)
 	asm volatile("mrc p15, 0, %0, c0, c0, 5\n" : "=r"(mpidr));
 
 	return mpidr & 3;
+}
+
+void set_vbar(unsigned long vbar)
+{
+	asm volatile("mcr p15, 0, %0, c12, c0, 0\n" : : "r"(vbar));
+}
+
+unsigned long get_vector_base_address(void)
+{
+	unsigned long address;
+
+	asm volatile("mrc p15, 0, %0, c12, c0, 0\n" : "=r"(address));
+
+	return address;
 }
 
 unsigned long get_ttbr0(void)
@@ -405,6 +400,7 @@ int map_framebuffer(void)
 	LOG("Framebuffer vaddr: 0x%08X\n", (uintptr_t)fb_addr);
 	LOG("Framebuffer paddr: 0x%08lX\n", get_paddr((uintptr_t)fb_addr));
 	LOG("Framebuffer size: 0x%08X\n", fb_size);
+	LOG("\n");
 
 	memset(&fb, 0, sizeof(fb));
 	fb.size        = sizeof(fb);
