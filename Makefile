@@ -11,7 +11,7 @@ PREFIX  = arm-vita-eabi
 CC      = $(PREFIX)-gcc
 AS      = $(PREFIX)-as
 OBJCOPY = $(PREFIX)-objcopy
-CFLAGS  = -Wl,-q -Wall -O0 -nostartfiles
+CFLAGS  = -Wl,-q -Wall -O0 -nostartfiles -mcpu=cortex-a9
 ASFLAGS =
 
 all: $(TARGET).skprx

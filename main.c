@@ -50,22 +50,44 @@ struct payload_args {
 
 static int payload_trampoline_thread(SceSize args, void *argp)
 {
-	int flags;
-
-	ksceKernelDelayThread(1000);
+	ksceKernelCpuDisableInterrupts();
 
 	/*
-	 * Set up the exception vectors to make them jump to our payload.
 	 * SCTLR.V is already 0 (Low exception vectors, base address 0x00000000)
 	 * SCTLR.VE is already 0 (Use the FIQ and IRQ vectors from the vector table)
 	 * The Vita has Security Extensions, so VBAR is used.
 	 */
-	flags = ksceKernelCpuDisableInterrupts();
 	set_vbar((unsigned long)SCRATCHPAD_ADDR);
-	ksceKernelCpuEnableInterrupts(flags);
+
+	asm volatile(
+		"mov r0, #0\n"
+		/* TLB invalidate */
+		"mcr p15, 0, r0, c8, c6, 0\n"
+		"mcr p15, 0, r0, c8, c5, 0\n"
+		"mcr p15, 0, r0, c8, c7, 0\n"
+		"mcr p15, 0, r0, c8, c3, 0\n"
+		/* Branch predictor invalidate all */
+		"mcr p15, 0, r0, c7, c5, 6\n"
+		/* Branch predictor invalidate all (IS) */
+		"mcr p15, 0, r0, c7, c1, 6\n"
+		/* Instruction cache invalidate all (PoU) */
+		"mcr p15, 0, r0, c7, c5, 0\n"
+		/* Instruction cache invalidate all (PoU, IS) */
+		"mcr p15, 0, r0, c7, c1, 0\n"
+		/* Instruction barrier */
+		"mcr p15, 0, r0, c7, c5, 4\n"
+		/* Data barrier */
+		"dmb\n"
+		"dsb\n"
+		: : : "r0");
+
+	/*
+	 * Jump to the reset vector
+	 */
+	asm volatile("bx %0\n" : : "r"(0x00000000));
 
 	while (1)
-		ksceKernelDelayThread(1000);
+		;
 
 	return 0;
 }
@@ -140,7 +162,7 @@ int module_start(SceSize argc, const void *args)
 	ksceKernelCpuUnrestrictedMemcpy(SCRATCHPAD_ADDR + EXCEPTION_VECTORS_SIZE,
 		&payload_args, sizeof(payload_args));
 	ksceKernelCpuDcacheAndL2WritebackRange(SCRATCHPAD_ADDR + EXCEPTION_VECTORS_SIZE,
-		payload_size);
+		sizeof(payload_args));
 
 	/*
 	 * Map the framebuffer.
@@ -159,7 +181,7 @@ int module_start(SceSize argc, const void *args)
 	int i;
 	for (i = 0; i < 4; i++) {
 		SceUID thid = ksceKernelCreateThread("trampoline",
-			payload_trampoline_thread, 0x3C, 0x1000, 0, 1 << i, 0);
+			payload_trampoline_thread, 0x00, 0x1000, 0, 1 << i, 0);
 
 		ksceKernelStartThread(thid, 0, NULL);
 	}
@@ -399,6 +421,7 @@ int map_framebuffer(void)
 		return ret;
 
 	memset(fb_addr, 0xFF, 4 * SCREEN_PITCH * SCREEN_H);
+	ksceKernelCpuDcacheAndL2WritebackRange(fb_addr, 4 * SCREEN_PITCH * SCREEN_H);
 
 	LOG("Framebuffer uid: 0x%08X\n", framebuffer_uid);
 	LOG("Framebuffer vaddr: 0x%08X\n", (uintptr_t)fb_addr);

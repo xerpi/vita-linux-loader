@@ -1,3 +1,5 @@
+.set PERIPHBASE, 0x1A000000
+
 	.cpu cortex-a9
 	.align 4
 	.code 32
@@ -18,18 +20,18 @@ _exception_vectors_table:
 	ldr pc, _interrupt_vector_h
 	ldr pc, _fast_interrupt_vector_h
 
+# Payload args
+arg_kernel_paddr: .word 0
+arg_dtb_paddr: .word 0
+
 _reset_h:                           .word payload_code
 _undefined_instruction_vector_h:    .word _stub_interrupt_vector_handler
 _software_interrupt_vector_h:       .word _stub_interrupt_vector_handler
 _prefetch_abort_vector_h:           .word _stub_interrupt_vector_handler
 _data_abort_vector_h:               .word _stub_interrupt_vector_handler
 _reserved_handler_h:                .word _stub_interrupt_vector_handler
-_interrupt_vector_h:                .word payload_code
+_interrupt_vector_h:                .word _stub_interrupt_vector_handler
 _fast_interrupt_vector_h:           .word _stub_interrupt_vector_handler
-
-# Payload args
-arg_kernel_paddr: .word 0
-arg_dtb_paddr: .word 0
 
 _stub_interrupt_vector_handler:
 	subs pc, lr, #4
@@ -73,6 +75,11 @@ cpu0_continue:
 	cmp r1, #4
 	blt 1b
 
+	# Disable the SCU
+	ldr r0, =PERIPHBASE
+	mov r1, #0
+	str r1, [r0]
+
 	# Now let's to disable the MMU and the data cache.
 	# Since we are in an identity-mapped region, it should be ok.
 	mrc p15, 0, r0, c1, c0, 0
@@ -80,13 +87,13 @@ cpu0_continue:
 	mcr p15, 0, r0, c1, c0, 0
 
 	# Disable private timer and watchdog
-	ldr r0, =0x1A002000
+	ldr r0, =(PERIPHBASE + 0x0600)
 	mov r1, #0
-	str r1, [r0, #(0x0600 + 0x08)]
-	str r1, [r0, #(0x0600 + 0x28)]
+	str r1, [r0, #0x08]
+	str r1, [r0, #0x28]
 
 	# Unlock all L2 cache lines
-	ldr r0, =0x1A002000
+	ldr r0, =(PERIPHBASE + 0x2000)
 	ldr r1, =0xFFFF
 	str r1, [r0, #0x954]
 	dmb
