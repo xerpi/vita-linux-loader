@@ -17,7 +17,7 @@ ASFLAGS =
 all: $(TARGET).skprx
 
 %.skprx: %.velf
-	vita-make-fself $< $@
+	vita-make-fself -c $< $@
 
 %.velf: %.elf
 	vita-elf-create -e $(TARGET).yml $< $@
@@ -42,5 +42,5 @@ clean:
 		payload.elf payload.bin payload_bin.o $(PAYLOAD_OBJS)
 
 send: $(TARGET).skprx
-	curl -T $(TARGET).skprx ftp://$(PSVITAIP):1337/ux0:/data/tai/kplugin.skprx
+	curl --ftp-method nocwd -T $(TARGET).skprx ftp://$(PSVITAIP):1337/ux0:/data/tai/kplugin.skprx
 	@echo "Sent."

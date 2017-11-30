@@ -318,7 +318,11 @@ error_load_linux_image:
 
 int module_stop(SceSize argc, const void *args)
 {
-	return SCE_KERNEL_STOP_SUCCESS;
+	/*
+	 * This is very important: it avoids the freeing
+	 * of the resources allocated by the module.
+	 */
+	return SCE_KERNEL_STOP_CANCEL;
 }
 
 static void uart0_print(const char *str)
