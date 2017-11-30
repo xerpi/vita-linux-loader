@@ -35,7 +35,7 @@ payload_bin.o: payload.bin
 $(TARGET).elf: $(TARGET_OBJS) payload_bin.o
 	$(CC) $(CFLAGS) $^ $(LIBS) -o $@
 
-.PHONY: clean send
+.PHONY: all clean send
 
 clean:
 	@rm -rf $(TARGET).skprx $(TARGET).velf $(TARGET).elf $(TARGET_OBJS) \

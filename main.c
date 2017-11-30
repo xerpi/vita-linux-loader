@@ -4,8 +4,12 @@
 #include <psp2kern/kernel/modulemgr.h>
 #include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/kernel/sysmem.h>
+#include <psp2kern/lowio/pervasive.h>
 #include <psp2kern/io/fcntl.h>
 #include <psp2kern/display.h>
+#include <psp2kern/power.h>
+#include <psp2kern/syscon.h>
+#include <psp2kern/uart.h>
 #include <taihen.h>
 
 #define LOG(s, ...) \
@@ -31,27 +35,6 @@ extern const unsigned char _binary_payload_bin_size;
 
 static const unsigned int payload_size = (unsigned int)&_binary_payload_bin_size;
 static const void *const payload_addr = (void *)&_binary_payload_bin_start;
-
-#define SYSCON_CMD_RESET_DEVICE	0x0C
-
-#define SYSCON_RESET_POWEROFF	0x00
-#define SYSCON_RESET_SUSPEND	0x01
-#define SYSCON_RESET_SOFT_RESET	0x11
-
-extern int kscePowerRequestStandby(void);
-
-extern int ksceUartReadAvailable(int bus);
-extern int ksceUartWrite(int bus, unsigned char data);
-extern int ksceUartRead(int bus);
-extern int ksceUartInit(int bus);
-
-extern int ScePervasiveForDriver_18DD8043(int uart_bus);
-extern int ScePervasiveForDriver_788B6C61(int uart_bus);
-extern int ScePervasiveForDriver_A7CE7DCC(int uart_bus);
-extern int ScePervasiveForDriver_EFD084D8(int uart_bus);
-
-extern int ksceSysconResetDevice(int type, int unk);
-extern int ksceSysconSendCommand(unsigned int cmd, void *args, int size);
 
 static void uart0_print(const char *str);
 static unsigned long get_cpu_id(void);
@@ -104,8 +87,8 @@ static SceUID SceSyscon_ksceSysconResetDevice_hook_uid = -1;
 static tai_hook_ref_t SceSyscon_ksceSysconSendCommand_ref;
 static SceUID SceSyscon_ksceSysconSendCommand_hook_uid = -1;
 
-static tai_hook_ref_t SceLowio_ScePervasiveForDriver_788B6C61_ref;
-static SceUID SceLowio_ScePervasiveForDriver_788B6C61_hook_uid = -1;
+static tai_hook_ref_t SceLowio_kscePervasiveUartResetEnable_ref;
+static SceUID SceLowio_kscePervasiveUartResetEnable_hook_uid = -1;
 
 static tai_hook_ref_t SceLowio_ScePervasiveForDriver_81A155F1_ref;
 static SceUID SceLowio_ScePervasiveForDriver_81A155F1_hook_uid = -1;
@@ -114,8 +97,8 @@ static int ksceSysconResetDevice_hook_func(int type, int unk)
 {
 	LOG("ksceSysconResetDevice(0x%08X, 0x%08X)\n", type, unk);
 
-	if (type == 0)
-		type = SYSCON_RESET_SOFT_RESET;
+	if (type == SCE_SYSCON_RESET_TYPE_POWEROFF)
+		type = SCE_SYSCON_RESET_TYPE_SOFT_RESET;
 
 	memset(&suspend_ctx, 0, sizeof(suspend_ctx));
 	suspend_ctx.size = sizeof(suspend_ctx);
@@ -145,20 +128,19 @@ static int ksceSysconSendCommand_hook_func(int cmd, void *buffer, unsigned int s
 {
 	LOG("ksceSysconSendCommand(0x%08X, %p, 0x%08X)\n", cmd, buffer, size);
 
-	if (cmd == SYSCON_CMD_RESET_DEVICE && size == 4)
+	if (cmd == SCE_SYSCON_CMD_RESET_DEVICE && size == 4)
 		buffer = &suspend_ctx_paddr;
 
 	return TAI_CONTINUE(int, SceSyscon_ksceSysconSendCommand_ref, cmd, buffer, size);
 }
 
-// Puts the UART into reset
-static int ScePervasiveForDriver_788B6C61_hook_func(int uart_bus)
+static int kscePervasiveUartResetEnable_hook_func(int uart_bus)
 {
-	LOG("ScePervasiveForDriver_788B6C61(0x%08X)\n", uart_bus);
+	LOG("kscePervasiveUartResetEnable(0x%08X)\n", uart_bus);
 	return 0;
 }
 
-// Returns ScePervasiveMisc vaddr, ScePower uses it to disable the UART
+/* Returns ScePervasiveMisc vaddr, ScePower uses it to disable the UART */
 static int ScePervasiveForDriver_81A155F1_hook_func(void)
 {
 	static unsigned int tmp[6];
@@ -182,9 +164,10 @@ void __attribute__((noreturn, used)) trampoline_stage_1(void)
 	sync_sema++;
 
 	if (get_cpu_id() == 0) {
-		ScePervasiveForDriver_EFD084D8(0); // Turn on clock
-		ScePervasiveForDriver_A7CE7DCC(0); // Out of reset
+		kscePervasiveUartClockEnable(0);
+		kscePervasiveUartResetDisable(0);
 		ksceUartInit(0);
+		uart0_print("trampoline_stage_1\n");
 
 		/*
 		 * Copy the payload.
@@ -238,8 +221,8 @@ int module_start(SceSize argc, const void *args)
 	unsigned int linux_size;
 	unsigned int dtb_size;
 
-	ScePervasiveForDriver_EFD084D8(0); // Turn on clock
-	ScePervasiveForDriver_A7CE7DCC(0); // Out of reset
+	kscePervasiveUartClockEnable(0);
+	kscePervasiveUartResetDisable(0);
 
 	ksceUartInit(0);
 
@@ -284,9 +267,9 @@ int module_start(SceSize argc, const void *args)
 		&SceSyscon_ksceSysconSendCommand_ref, "SceSyscon", 0x60A35F64,
 		0xE26488B9, ksceSysconSendCommand_hook_func);
 
-	SceLowio_ScePervasiveForDriver_788B6C61_hook_uid = taiHookFunctionExportForKernel(KERNEL_PID,
-		&SceLowio_ScePervasiveForDriver_788B6C61_ref, "SceLowio", 0xE692C727,
-		0x788B6C61, ScePervasiveForDriver_788B6C61_hook_func);
+	SceLowio_kscePervasiveUartResetEnable_hook_uid = taiHookFunctionExportForKernel(KERNEL_PID,
+		&SceLowio_kscePervasiveUartResetEnable_ref, "SceLowio", 0xE692C727,
+		0x788B6C61, kscePervasiveUartResetEnable_hook_func);
 
 	SceLowio_ScePervasiveForDriver_81A155F1_hook_uid = taiHookFunctionExportForKernel(KERNEL_PID,
 		&SceLowio_ScePervasiveForDriver_81A155F1_ref, "SceLowio", 0xE692C727,
@@ -300,7 +283,7 @@ int module_start(SceSize argc, const void *args)
 	SceKernelAllocMemBlockKernelOpt opt;
         memset(&opt, 0, sizeof(opt));
         opt.size = sizeof(opt);
-        opt.attr = 2;
+        opt.attr = SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_PADDR;
         opt.paddr = 0x1F000000;
         SceUID scratchpad_uid = ksceKernelAllocMemBlock("ScratchPad32KiB", 0x20108006, 0x8000, &opt);
 
@@ -480,7 +463,7 @@ int alloc_phycont(unsigned int size, SceUID *uid, void **addr)
 	SceKernelAllocMemBlockKernelOpt opt;
 	memset(&opt, 0, sizeof(opt));
 	opt.size = sizeof(opt);
-	opt.attr = 0x200004;
+	opt.attr = SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_PHYCONT | SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_ALIGNMENT;
 	opt.alignment = 0x1000;
 	mem_uid = ksceKernelAllocMemBlock("phycont", 0x30808006, mem_size, &opt);
 	if (mem_uid < 0)
