@@ -1,6 +1,6 @@
 TARGET   = linuxloader
-TARGET_OBJS  = main.o trampoline.o
-PAYLOAD_OBJS = payload/start.o
+TARGET_OBJS  = main.o resume.o
+BOOTSTRAP_OBJS = linux_bootstrap.o
 
 LIBS =	-ltaihenForKernel_stub -lSceSysclibForDriver_stub -lSceSysmemForDriver_stub \
 	-lSceSysmemForKernel_stub -lSceThreadmgrForDriver_stub -lSceCpuForKernel_stub \
@@ -22,24 +22,23 @@ all: $(TARGET).skprx
 %.velf: %.elf
 	vita-elf-create -e $(TARGET).yml $< $@
 
-payload.elf: $(PAYLOAD_OBJS)
-	$(CC) -T payload/payload.ld -nostartfiles -nostdlib $^ -o $@ -lgcc
+linux_bootstrap.elf: $(BOOTSTRAP_OBJS)
+	$(CC) -T linux_bootstrap.ld -nostartfiles -nostdlib $^ -o $@ -lgcc
 
-payload.bin: payload.elf
+linux_bootstrap.bin: linux_bootstrap.elf
 	$(OBJCOPY) -S -O binary $^ $@
 
-payload_bin.o: payload.bin
-	$(OBJCOPY) --input binary --output elf32-littlearm \
-		--binary-architecture arm $^ $@
+linux_bootstrap_bin.o: linux_bootstrap.bin
+	$(OBJCOPY) --input binary --output elf32-littlearm --binary-architecture arm $^ $@
 
-$(TARGET).elf: $(TARGET_OBJS) payload_bin.o
+$(TARGET).elf: $(TARGET_OBJS) linux_bootstrap_bin.o
 	$(CC) $(CFLAGS) $^ $(LIBS) -o $@
 
 .PHONY: all clean send
 
 clean:
-	@rm -rf $(TARGET).skprx $(TARGET).velf $(TARGET).elf $(TARGET_OBJS) \
-		payload.elf payload.bin payload_bin.o $(PAYLOAD_OBJS)
+	@rm -rf $(TARGET).skprx $(TARGET).velf $(TARGET).elf $(TARGET_OBJS) $(BOOTSTRAP_OBJS) \
+	        linux_bootstrap.elf linux_bootstrap.bin linux_bootstrap_bin.o
 
 send: $(TARGET).skprx
 	curl --ftp-method nocwd -T $(TARGET).skprx ftp://$(PSVITAIP):1337/ux0:/data/tai/kplugin.skprx

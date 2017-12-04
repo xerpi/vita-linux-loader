@@ -5,9 +5,12 @@ ENTRY(_start)
 
 SECTIONS
 {
-	. = 0x00000000;
+	. = 0x1F000000;
 	.text : {
 		*(.text)
 		*(.text*)
+	}
+	.data : {
+		*(.data*)
 	}
 }

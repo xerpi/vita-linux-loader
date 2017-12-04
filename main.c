@@ -21,34 +21,12 @@
 
 void _start() __attribute__ ((weak, alias ("module_start")));
 
-#define ALIGN(x, a) (((x) + ((a) - 1)) & ~((a) - 1))
+#define ALIGN(x, a)	(((x) + ((a) - 1)) & ~((a) - 1))
 
-#define LINUX_FILENAME "ux0:/linux/zImage"
-#define DTB_FILENAME "ux0:/linux/vita.dtb"
+#define LINUX_FILENAME	"ux0:/linux/zImage"
+#define DTB_FILENAME	"ux0:/linux/vita.dtb"
 
-#define PAYLOAD_PADDR ((void *)0x00000000)
-
-extern void trampoline_stage_0(void);
-
-extern const unsigned char _binary_payload_bin_start;
-extern const unsigned char _binary_payload_bin_size;
-
-static const unsigned int payload_size = (unsigned int)&_binary_payload_bin_size;
-static const void *const payload_addr = (void *)&_binary_payload_bin_start;
-
-static void uart0_print(const char *str);
-static unsigned long get_cpu_id(void);
-static unsigned long get_ttbr0(void);
-static unsigned long get_ttbcr(void);
-static unsigned long get_paddr(unsigned long vaddr);
-static int find_paddr(unsigned long paddr, unsigned long vaddr, unsigned int size,
-		      unsigned int step, unsigned long *found_vaddr);
-static unsigned long page_table_entry(unsigned long paddr);
-static void map_identity(void);
-static int alloc_phycont(unsigned int size, SceUID *uid, void **addr);
-static int load_file_phycont(const char *path, SceUID *uid, void **addr, unsigned int *size);
-
-typedef struct SceSysconSuspendContext {
+typedef struct SceSysconResumeContext {
 	unsigned int size;
 	unsigned int unk;
 	unsigned int buff_vaddr;
@@ -69,18 +47,22 @@ typedef struct SceSysconSuspendContext {
 	unsigned int TPIDRPRW;
 	unsigned int unk2[6];
 	unsigned long long time;
-} SceSysconSuspendContext;
+} SceSysconResumeContext;
 
-unsigned int scratchpad_vaddr;
+extern void resume_function(void);
 
-static SceSysconSuspendContext suspend_ctx;
-static unsigned int suspend_ctx_paddr;
-static volatile unsigned int sync_sema;
-static volatile unsigned int sync_evflag;
+static unsigned int *get_lvl1_page_table_va(void);
+static int find_paddr(uint32_t paddr, const void *vaddr_start, unsigned int range, void **found_vaddr);
+static int alloc_phycont(unsigned int size, unsigned int alignment,  SceUID *uid, void **addr);
+static int load_file_phycont(const char *path, SceUID *uid, void **addr, unsigned int *size);
+static void uart0_print(const char *str);
 
-static unsigned long linux_paddr;
-static unsigned long dtb_paddr;
-static unsigned long pl310_vaddr;
+static SceSysconResumeContext resume_ctx;
+static uintptr_t resume_ctx_paddr;
+static unsigned int resume_ctx_buff[32];
+uintptr_t linux_paddr;
+uintptr_t dtb_paddr;
+void *lvl1_pt_va;
 
 static tai_hook_ref_t SceSyscon_ksceSysconResetDevice_ref;
 static SceUID SceSyscon_ksceSysconResetDevice_hook_uid = -1;
@@ -89,54 +71,77 @@ static SceUID SceSyscon_ksceSysconSendCommand_hook_uid = -1;
 
 static tai_hook_ref_t SceLowio_kscePervasiveUartResetEnable_ref;
 static SceUID SceLowio_kscePervasiveUartResetEnable_hook_uid = -1;
-
 static tai_hook_ref_t SceLowio_ScePervasiveForDriver_81A155F1_ref;
 static SceUID SceLowio_ScePervasiveForDriver_81A155F1_hook_uid = -1;
 
-static int ksceSysconResetDevice_hook_func(int type, int unk)
+static void setup_payload(void)
 {
-	LOG("ksceSysconResetDevice(0x%08X, 0x%08X)\n", type, unk);
+	memset(&resume_ctx, 0, sizeof(resume_ctx));
+	resume_ctx.size = sizeof(resume_ctx);
+	resume_ctx.buff_vaddr = (unsigned int )resume_ctx_buff;
+	resume_ctx.resume_func_vaddr = (unsigned int)&resume_function;
+	asm volatile("mrc p15, 0, %0, c1, c0, 0\n\t" : "=r"(resume_ctx.SCTLR));
+	asm volatile("mrc p15, 0, %0, c1, c0, 1\n\t" : "=r"(resume_ctx.ACTLR));
+	asm volatile("mrc p15, 0, %0, c1, c0, 2\n\t" : "=r"(resume_ctx.CPACR));
+	asm volatile("mrc p15, 0, %0, c2, c0, 0\n\t" : "=r"(resume_ctx.TTBR0));
+	asm volatile("mrc p15, 0, %0, c2, c0, 1\n\t" : "=r"(resume_ctx.TTBR1));
+	asm volatile("mrc p15, 0, %0, c2, c0, 2\n\t" : "=r"(resume_ctx.TTBCR));
+	asm volatile("mrc p15, 0, %0, c3, c0, 0\n\t" : "=r"(resume_ctx.DACR));
+	asm volatile("mrc p15, 0, %0, c10, c2, 0\n\t" : "=r"(resume_ctx.PRRR));
+	asm volatile("mrc p15, 0, %0, c10, c2, 1\n\t" : "=r"(resume_ctx.NMRR));
+	asm volatile("mrc p15, 0, %0, c12, c0, 0\n\t" : "=r"(resume_ctx.VBAR));
+	asm volatile("mrc p15, 0, %0, c13, c0, 1\n\t" : "=r"(resume_ctx.CONTEXTIDR));
+	asm volatile("mrc p15, 0, %0, c13, c0, 2\n\t" : "=r"(resume_ctx.TPIDRURW));
+	asm volatile("mrc p15, 0, %0, c13, c0, 3\n\t" : "=r"(resume_ctx.TPIDRURO));
+	asm volatile("mrc p15, 0, %0, c13, c0, 4\n\t" : "=r"(resume_ctx.TPIDRPRW));
+	resume_ctx.time = ksceKernelGetSystemTimeWide();
 
-	if (type == SCE_SYSCON_RESET_TYPE_POWEROFF)
+	ksceKernelCpuDcacheAndL2WritebackRange(&resume_ctx, sizeof(resume_ctx));
+
+	lvl1_pt_va = get_lvl1_page_table_va();
+
+	LOG("lvl1_pt_va: %p\n", lvl1_pt_va);
+}
+
+static int ksceSysconResetDevice_hook_func(int type, int mode)
+{
+	LOG("ksceSysconResetDevice(0x%08X, 0x%08X)\n", type, mode);
+
+	/*
+	 * The Vita OS thinks it's about to poweroff, but we will instead
+	 * setup the payload and trigger a soft reset.
+	 */
+	if (type == SCE_SYSCON_RESET_TYPE_POWEROFF) {
+		setup_payload();
 		type = SCE_SYSCON_RESET_TYPE_SOFT_RESET;
+	}
 
-	memset(&suspend_ctx, 0, sizeof(suspend_ctx));
-	suspend_ctx.size = sizeof(suspend_ctx);
-	suspend_ctx.resume_func_vaddr = (unsigned int)&trampoline_stage_0;
-	asm volatile("mrc p15, 0, %0, c1, c0, 0\n\t" : "=r"(suspend_ctx.SCTLR));
-	asm volatile("mrc p15, 0, %0, c1, c0, 1\n\t" : "=r"(suspend_ctx.ACTLR));
-	asm volatile("mrc p15, 0, %0, c1, c0, 2\n\t" : "=r"(suspend_ctx.CPACR));
-	asm volatile("mrc p15, 0, %0, c2, c0, 0\n\t" : "=r"(suspend_ctx.TTBR0));
-	asm volatile("mrc p15, 0, %0, c2, c0, 1\n\t" : "=r"(suspend_ctx.TTBR1));
-	asm volatile("mrc p15, 0, %0, c2, c0, 2\n\t" : "=r"(suspend_ctx.TTBCR));
-	asm volatile("mrc p15, 0, %0, c3, c0, 0\n\t" : "=r"(suspend_ctx.DACR));
-	asm volatile("mrc p15, 0, %0, c10, c2, 0\n\t" : "=r"(suspend_ctx.PRRR));
-	asm volatile("mrc p15, 0, %0, c10, c2, 1\n\t" : "=r"(suspend_ctx.NMRR));
-	asm volatile("mrc p15, 0, %0, c12, c0, 0\n\t" : "=r"(suspend_ctx.VBAR));
-	asm volatile("mrc p15, 0, %0, c13, c0, 1\n\t" : "=r"(suspend_ctx.CONTEXTIDR));
-	asm volatile("mrc p15, 0, %0, c13, c0, 2\n\t" : "=r"(suspend_ctx.TPIDRURW));
-	asm volatile("mrc p15, 0, %0, c13, c0, 3\n\t" : "=r"(suspend_ctx.TPIDRURO));
-	asm volatile("mrc p15, 0, %0, c13, c0, 4\n\t" : "=r"(suspend_ctx.TPIDRPRW));
-	suspend_ctx.time = ksceKernelGetSystemTimeWide();
+	LOG("Resetting the device!\n");
 
-	ksceKernelCpuDcacheAndL2WritebackInvalidateRange(&suspend_ctx, sizeof(suspend_ctx));
+	ksceKernelCpuDcacheWritebackInvalidateAll();
+	ksceKernelCpuIcacheInvalidateAll();
 
-	return TAI_CONTINUE(int, SceSyscon_ksceSysconResetDevice_ref, type, unk);
+	return TAI_CONTINUE(int, SceSyscon_ksceSysconResetDevice_ref, type, mode);
 }
 
 static int ksceSysconSendCommand_hook_func(int cmd, void *buffer, unsigned int size)
 {
 	LOG("ksceSysconSendCommand(0x%08X, %p, 0x%08X)\n", cmd, buffer, size);
 
+	/*
+	 * Change the resume context to ours.
+	 */
 	if (cmd == SCE_SYSCON_CMD_RESET_DEVICE && size == 4)
-		buffer = &suspend_ctx_paddr;
+		buffer = &resume_ctx_paddr;
 
 	return TAI_CONTINUE(int, SceSyscon_ksceSysconSendCommand_ref, cmd, buffer, size);
 }
 
 static int kscePervasiveUartResetEnable_hook_func(int uart_bus)
 {
-	LOG("kscePervasiveUartResetEnable(0x%08X)\n", uart_bus);
+	/*
+	 * We want to keep the UART enabled...
+	 */
 	return 0;
 }
 
@@ -146,69 +151,6 @@ static void *ScePervasiveForDriver_81A155F1_hook_func(void)
 	static unsigned int tmp[0x24 / 4];
 	LOG("ScePervasiveForDriver_81A155F1()\n");
 	return tmp;
-}
-
-struct payload_args {
-	unsigned long kernel_paddr;
-	unsigned long dtb_paddr;
-	unsigned long arg_pl310_vaddr;
-} __attribute__((packed));
-
-void __attribute__((noreturn, used)) trampoline_stage_1(void)
-{
-	int cpu_id = get_cpu_id();
-
-	while (sync_sema != cpu_id)
-		;
-
-	sync_sema++;
-
-	if (get_cpu_id() == 0) {
-		kscePervasiveUartClockEnable(0);
-		kscePervasiveUartResetDisable(0);
-		ksceUartInit(0);
-		uart0_print("trampoline_stage_1\n");
-
-		/*
-		 * Copy the payload.
-		 */
-		ksceKernelCpuUnrestrictedMemcpy(PAYLOAD_PADDR, payload_addr, payload_size);
-
-		/*
-		 * Copy the payload arguments.
-		 */
-		struct payload_args payload_args;
-		payload_args.kernel_paddr = linux_paddr;
-		payload_args.dtb_paddr = dtb_paddr;
-		payload_args.arg_pl310_vaddr = pl310_vaddr;
-
-		ksceKernelCpuUnrestrictedMemcpy(PAYLOAD_PADDR,
-			&payload_args, sizeof(payload_args));
-		ksceKernelCpuDcacheAndL2WritebackRange(PAYLOAD_PADDR,
-			sizeof(payload_args));
-
-		/*
-		 * Writeback cache
-		 */
-		ksceKernelCpuDcacheWritebackRange(PAYLOAD_PADDR, ALIGN(payload_size, 4096));
-		ksceKernelCpuIcacheAndL2WritebackInvalidateRange(PAYLOAD_PADDR, ALIGN(payload_size, 4096));
-
-		while (sync_sema != 4)
-			;
-
-		sync_evflag = 1;
-	}
-
-	while (sync_evflag != 1)
-		;
-
-	ksceKernelCpuDcacheWritebackAll();
-	ksceKernelCpuIcacheInvalidateAll();
-
-	((void (*)(void))PAYLOAD_PADDR + sizeof(struct payload_args))();
-
-	while (1)
-		;
 }
 
 int module_start(SceSize argc, const void *args)
@@ -237,11 +179,11 @@ int module_start(SceSize argc, const void *args)
 		goto error_load_linux_image;
 	}
 
-	linux_paddr = get_paddr((unsigned int)linux_vaddr);
+	ksceKernelGetPaddr(linux_vaddr, &linux_paddr);
 
 	LOG("Linux memory UID: 0x%08X\n", linux_uid);
 	LOG("Linux load vaddr: 0x%08X\n", (unsigned int)linux_vaddr);
-	LOG("Linux load paddr: 0x%08lX\n", linux_paddr);
+	LOG("Linux load paddr: 0x%08X\n", linux_paddr);
 	LOG("Linux size: 0x%08X\n", linux_size);
 	LOG("\n");
 
@@ -251,11 +193,11 @@ int module_start(SceSize argc, const void *args)
 		goto error_load_dtb;
 	}
 
-	dtb_paddr = get_paddr((unsigned int)dtb_vaddr);
+	ksceKernelGetPaddr(dtb_vaddr, &dtb_paddr);
 
 	LOG("DTB memory UID: 0x%08X\n", dtb_uid);
 	LOG("DTB load vaddr: 0x%08X\n", (unsigned int)dtb_vaddr);
-	LOG("DTB load paddr: 0x%08lX\n", dtb_paddr);
+	LOG("DTB load paddr: 0x%08X\n", dtb_paddr);
 	LOG("DTB size: 0x%08X\n", dtb_size);
 	LOG("\n");
 
@@ -275,36 +217,12 @@ int module_start(SceSize argc, const void *args)
 		&SceLowio_ScePervasiveForDriver_81A155F1_ref, "SceLowio", 0xE692C727,
 		0x81A155F1, ScePervasiveForDriver_81A155F1_hook_func);
 
-	LOG("Hooks done\n");
+	LOG("Hooks installed.\n");
 
-	map_identity();
-	LOG("Identity map created (at scratchpad).\n");
+	ksceKernelGetPaddr(&resume_ctx, &resume_ctx_paddr);
+	LOG("Resume context pa: 0x%08X\n", resume_ctx_paddr);
 
-	SceKernelAllocMemBlockKernelOpt opt;
-        memset(&opt, 0, sizeof(opt));
-        opt.size = sizeof(opt);
-        opt.attr = SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_PADDR;
-        opt.paddr = 0x1F000000;
-        SceUID scratchpad_uid = ksceKernelAllocMemBlock("ScratchPad32KiB", 0x20108006, 0x8000, &opt);
-
-        ksceKernelGetMemBlockBase(scratchpad_uid, (void **)&scratchpad_vaddr);
-        LOG("Scratchpad mapped to 0x%08X.\n", scratchpad_vaddr);
-
-       	ksceKernelGetPaddr(&suspend_ctx, &suspend_ctx_paddr);
-	LOG("Suspend context paddr: 0x%08X\n", suspend_ctx_paddr);
-
-	LOG("Payload paddr: 0x%08X\n", (unsigned int)PAYLOAD_PADDR);
-
-	find_paddr(0x1A002000, 0, 0xFFFFFFFF, 0x1000, &pl310_vaddr);
-
-	LOG("PL310 regs vaddr: 0x%08lX\n", pl310_vaddr);
-	/*LOG("PL310 0x000: 0x%08lX\n", ((unsigned int *)pl310_vaddr)[0]);
-	LOG("PL310 0x004: 0x%08lX\n", ((unsigned int *)pl310_vaddr)[1]);
-	LOG("PL310 0x100: 0x%08lX\n", ((unsigned int *)pl310_vaddr)[0x100/4]);
-	LOG("PL310 0x104: 0x%08lX\n", ((unsigned int *)pl310_vaddr)[0x104/4]);*/
-
-	sync_sema = 0;
-	sync_evflag = 0;
+	LOG("Requesting standby...\n");
 
 	kscePowerRequestStandby();
 
@@ -325,58 +243,39 @@ int module_stop(SceSize argc, const void *args)
 	return SCE_KERNEL_STOP_CANCEL;
 }
 
-static void uart0_print(const char *str)
+unsigned int *get_lvl1_page_table_va(void)
 {
-	while (*str) {
-		ksceUartWrite(0, *str);
-		if (*str == '\n')
-			ksceUartWrite(0, '\r');
-		str++;
-	}
+	uint32_t ttbcr;
+	uint32_t ttbr0;
+	uint32_t ttbcr_n;
+	uint32_t lvl1_pt_pa;
+	void *lvl1_pt_va;
+
+	asm volatile(
+		"mrc p15, 0, %0, c2, c0, 2\n\t"
+		"mrc p15, 0, %1, c2, c0, 0\n\t"
+		: "=r"(ttbcr), "=r"(ttbr0));
+
+	ttbcr_n = ttbcr & 7;
+	lvl1_pt_pa = ttbr0 & ~((1 << (14 - ttbcr_n)) - 1);
+
+	if (!find_paddr(lvl1_pt_pa, (void *)0, 0xFFFFFFFF, &lvl1_pt_va))
+		return NULL;
+
+	return lvl1_pt_va;
 }
 
-unsigned long get_cpu_id(void)
+int find_paddr(uint32_t paddr, const void *vaddr_start, unsigned int range, void **found_vaddr)
 {
-	unsigned long mpidr;
-
-	asm volatile("mrc p15, 0, %0, c0, c0, 5\n" : "=r"(mpidr));
-
-	return mpidr & 3;
-}
-
-unsigned long get_ttbr0(void)
-{
-	unsigned long ttbr0;
-
-	asm volatile("mrc p15, 0, %0, c2, c0, 0\n" : "=r"(ttbr0));
-
-	return ttbr0;
-}
-
-unsigned long get_ttbcr(void)
-{
-	unsigned long ttbcr;
-
-	asm volatile("mrc p15, 0, %0, c2, c0, 2\n" : "=r"(ttbcr));
-
-	return ttbcr;
-}
-
-unsigned long get_paddr(unsigned long vaddr)
-{
-	unsigned long paddr;
-
-	ksceKernelGetPaddr((void *)vaddr, (uintptr_t *)&paddr);
-
-	return paddr;
-}
-
-int find_paddr(unsigned long paddr, unsigned long vaddr, unsigned int size, unsigned int step, unsigned long *found_vaddr)
-{
-	unsigned long vaddr_end = vaddr + size;
+	const unsigned int step = 0x1000;
+	void *vaddr = (void *)vaddr_start;
+	const void *vaddr_end = vaddr_start + range;
 
 	for (; vaddr < vaddr_end; vaddr += step) {
-		unsigned long cur_paddr = get_paddr(vaddr);
+		uintptr_t cur_paddr;
+
+		if (ksceKernelGetPaddr(vaddr, &cur_paddr) < 0)
+			continue;
 
 		if ((cur_paddr & ~(step - 1)) == (paddr & ~(step - 1))) {
 			if (found_vaddr)
@@ -388,88 +287,18 @@ int find_paddr(unsigned long paddr, unsigned long vaddr, unsigned int size, unsi
 	return 0;
 }
 
-unsigned long page_table_entry(unsigned long paddr)
-{
-	unsigned long base_addr = paddr >> 12;
-	unsigned long XN        = 0b0;   /* XN disabled */
-	unsigned long C_B       = 0b10;  /* Outer and Inner Write-Through, no Write-Allocate */
-	unsigned long AP_1_0    = 0b11;  /* Full access */
-	unsigned long TEX_2_0   = 0b000; /* Outer and Inner Write-Through, no Write-Allocate */
-	unsigned long AP_2      = 0b0;   /* Full access */
-	unsigned long S         = 0b1;   /* Shareable */
-	unsigned long nG        = 0b0;   /* Global translation */
-
-	return  (base_addr << 12) |
-		(nG        << 11) |
-		(S         << 10) |
-		(AP_2      <<  9) |
-		(TEX_2_0   <<  6) |
-		(AP_1_0    <<  4) |
-		(C_B       <<  2) |
-		(1         <<  1) |
-		(XN        <<  0);
-}
-
-void map_identity(void)
-{
-	int i;
-	unsigned long ttbcr_n;
-	unsigned long ttbr0_paddr;
-	unsigned long ttbr0_vaddr;
-	unsigned long first_page_table_paddr;
-	unsigned long first_page_table_vaddr;
-	unsigned long pt_entries[4];
-
-	/*
-	 * Identity-map the start of the scratchpad (PA 0x00000000-0x00003FFF) to
-	 * the VA 0x00000000-0x00003FFF.
-	 * To do such thing we will use the first 4 PTEs of the
-	 * first page table of TTBR0 (which aren't used).
-	 */
-
-	ttbcr_n = get_ttbcr() & 7;
-	ttbr0_paddr = get_ttbr0() & ~((1 << (14 - ttbcr_n)) - 1);
-	find_paddr(ttbr0_paddr, 0, 0xFFFFFFFF, 0x1000, &ttbr0_vaddr);
-
-	first_page_table_paddr = (*(unsigned int *)ttbr0_vaddr) & 0xFFFFFC00;
-	find_paddr(first_page_table_paddr, 0, 0xFFFFFFFF, 0x1000, &first_page_table_vaddr);
-
-	for (i = 0; i < 4; i++)
-		pt_entries[i] = page_table_entry(i << 12);
-
-	ksceKernelCpuUnrestrictedMemcpy((void *)first_page_table_vaddr, pt_entries, sizeof(pt_entries));
-	ksceKernelCpuDcacheAndL2WritebackRange((void *)first_page_table_vaddr, sizeof(pt_entries));
-
-	asm volatile(
-		"dsb\n\t"
-		"isb\n\t"
-		/* Drain write buffer */
-		"mcr p15, 0, %0, c7, c10, 4\n"
-		/* Flush I,D TLBs */
-		"mcr p15, 0, %0, c8, c7, 0\n"
-		"mcr p15, 0, %0, c8, c6, 0\n"
-		"mcr p15, 0, %0, c8, c5, 0\n"
-		"mcr p15, 0, %0, c8, c3, 0\n"
-		/* Instruction barrier */
-		"mcr p15, 0, %0, c7, c5, 4\n"
-		: : "r"(0));
-}
-
-int alloc_phycont(unsigned int size, SceUID *uid, void **addr)
+int alloc_phycont(unsigned int size, unsigned int alignment, SceUID *uid, void **addr)
 {
 	int ret;
 	SceUID mem_uid;
-	unsigned int mem_size;
 	void *mem_addr;
-
-	mem_size = ALIGN(size, 4096);
 
 	SceKernelAllocMemBlockKernelOpt opt;
 	memset(&opt, 0, sizeof(opt));
 	opt.size = sizeof(opt);
 	opt.attr = SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_PHYCONT | SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_ALIGNMENT;
-	opt.alignment = 0x1000;
-	mem_uid = ksceKernelAllocMemBlock("phycont", 0x30808006, mem_size, &opt);
+	opt.alignment = ALIGN(alignment, 0x1000);
+	mem_uid = ksceKernelAllocMemBlock("phycont", 0x30808006, ALIGN(size, 0x1000), &opt);
 	if (mem_uid < 0)
 		return mem_uid;
 
@@ -494,14 +323,16 @@ int load_file_phycont(const char *path, SceUID *uid, void **addr, unsigned int *
 	SceUID mem_uid;
 	void *mem_addr;
 	unsigned int file_size;
+	unsigned int aligned_size;
 
 	fd = ksceIoOpen(path, SCE_O_RDONLY, 0);
 	if (fd < 0)
 		return fd;
 
 	file_size = ksceIoLseek(fd, 0, SCE_SEEK_END);
+	aligned_size = ALIGN(file_size, 4096);
 
-	ret = alloc_phycont(ALIGN(file_size, 4096), &mem_uid, &mem_addr);
+	ret = alloc_phycont(aligned_size, 4096, &mem_uid, &mem_addr);
 	if (ret < 0) {
 		ksceIoClose(fd);
 		return ret;
@@ -510,8 +341,8 @@ int load_file_phycont(const char *path, SceUID *uid, void **addr, unsigned int *
 	ksceIoLseek(fd, 0, SCE_SEEK_SET);
 	ksceIoRead(fd, mem_addr, file_size);
 
-	ksceKernelCpuDcacheAndL2WritebackRange(mem_addr, ALIGN(file_size, 4096));
-	ksceKernelCpuIcacheInvalidateRange(mem_addr, ALIGN(file_size, 4096));
+	ksceKernelCpuDcacheAndL2WritebackRange(mem_addr, aligned_size);
+	ksceKernelCpuIcacheInvalidateRange(mem_addr, aligned_size);
 
 	ksceIoClose(fd);
 
@@ -523,4 +354,14 @@ int load_file_phycont(const char *path, SceUID *uid, void **addr, unsigned int *
 		*size = file_size;
 
 	return 0;
+}
+
+static void uart0_print(const char *str)
+{
+	while (*str) {
+		ksceUartWrite(0, *str);
+		if (*str == '\n')
+			ksceUartWrite(0, '\r');
+		str++;
+	}
 }
