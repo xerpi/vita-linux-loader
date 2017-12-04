@@ -141,11 +141,11 @@ static int kscePervasiveUartResetEnable_hook_func(int uart_bus)
 }
 
 /* Returns ScePervasiveMisc vaddr, ScePower uses it to disable the UART */
-static int ScePervasiveForDriver_81A155F1_hook_func(void)
+static void *ScePervasiveForDriver_81A155F1_hook_func(void)
 {
-	static unsigned int tmp[6];
+	static unsigned int tmp[0x24 / 4];
 	LOG("ScePervasiveForDriver_81A155F1()\n");
-	return (int)tmp;
+	return tmp;
 }
 
 struct payload_args {
