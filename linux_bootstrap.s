@@ -1,5 +1,5 @@
 	.align 4
-	.section .text.linux_bootstrap
+	.text
 	.cpu cortex-a9
 
 	.globl _start
@@ -9,6 +9,9 @@ _start:
 	mov r9, r0
 	mov r10, r1
 
+	ldr r0, =sync_point_1
+	bl cpus_sync
+
 	@ Now we are in an identity-mapped region, let's disable
 	@ the MMU, the Dcache and the Icache
 	mrc p15, 0, r0, c1, c0, 0
@@ -17,17 +20,40 @@ _start:
 	bic r0, #1 << 12	@ Icache
 	mcr p15, 0, r0, c1, c0, 0
 
+	@ Clean and invalidate the entire Dcache
+	bl dcache_clean_inv_all
+
+	mov r0, #0
+	mcr p15, 0, r0, c7, c5, 6 @ BPIALL (Branch Predictor Invalidate All)
+	isb
+	mcr p15, 0, r0, c7, c5, 0 @ ICIALLU (Icache Invalidate All to PoU)
+	dsb
+	mcr p15, 0, r0, c8, c7, 0 @ TLBIALL (Unified TLB Invalidate All)
+	isb
+
 	@ Get CPU ID
 	mrc p15, 0, r0, c0, c0, 5
 	and r0, #0xF
 	cmp r0, #0
 	beq cpu0_cont
+
 1:
-	wfe
+	wfene
 	b 1b
 
 cpu0_cont:
+	@ Enable the UART
+	bl uart_enable
 
+	@ Jump to Linux!
+	mov r0, #0
+	mvn r1, #0
+	mov r2, r10
+	mov lr, r9
+	bx lr
+
+@ Uses r0, r1 and r2
+uart_enable:
 	@ Enable the UART clock (pervasive)
 	ldr r0, =0xE3102000	@ ScePervasiveGate
 	ldr r1, =0xE3101000	@ ScePervasiveResetReg
@@ -69,24 +95,16 @@ cpu0_cont:
 	str r2, [r0, #4]
 	dsb
 
-	mov r0, #0
-	@ BPIALL (Branch Predictor Invalidate All)
-	mcr p15, 0, r0, c7, c5, 6
-	isb
-	@ ICIALLU (Icache Invalidate All to PoU)
-	mcr p15, 0, r0, c7, c5, 0
-	dsb
-	@ TLBIALL (Unified TLB Invalidate All)
-	mcr p15, 0, r0, c8, c7, 0
-	isb
+	bx lr
 
-	@ Dcache invalidate all
+@ Uses: r0, r1, r2
+dcache_clean_inv_all:
 	mov r0, #0
 1:
 	mov r1, #0
 2:
 	orr r2, r1, r0
-	mcr p15, 0, r2, c7, c6, 2 @ DCISW - Data cache invalidate by set/way
+	mcr p15, 0, r2, c7, c14, 2 @ DCCISW (Data cache clean and invalidate by set/way)
 	add r1, r1, #0x40000000
 	cmp r1, #0
 	bne 2b
@@ -94,14 +112,32 @@ cpu0_cont:
 	cmp r0, #0x2000
 	bne 2b
 	dsb
-
-	@ Jump to Linux!
-	mov r0, #0
-	mvn r1, #0
-	mov r2, r10
-	mov lr, r9
 	bx lr
 
-	.ltorg
+@ r0 = sync point address
+@ Uses: r0, r1, r2
+cpus_sync:
+	mrc p15, 0, r1, c0, c0, 5
+	and r1, #0xF
+	cmp r1, #0
+	streq r1, [r0]
+1:
+	ldrb r2, [r0]
+	cmp r1, r2
+	wfene
+	bne 1b
+	ldrh r2, [r0]
+	adds r2, #1
+	adds r2, r2, #0x100
+	strh r2, [r0]
+	dsb
+	sev
+1:
+	ldrb r2, [r0, #1]
+	cmp r2, #4
+	wfene
+	bne 1b
+	bx lr
 
 	.data
+sync_point_1: .word 0

@@ -57,13 +57,6 @@ static int alloc_phycont(unsigned int size, unsigned int alignment,  SceUID *uid
 static int load_file_phycont(const char *path, SceUID *uid, void **addr, unsigned int *size);
 static void uart0_print(const char *str);
 
-static SceSysconResumeContext resume_ctx;
-static uintptr_t resume_ctx_paddr;
-static unsigned int resume_ctx_buff[32];
-uintptr_t linux_paddr;
-uintptr_t dtb_paddr;
-void *lvl1_pt_va;
-
 static tai_hook_ref_t SceSyscon_ksceSysconResetDevice_ref;
 static SceUID SceSyscon_ksceSysconResetDevice_hook_uid = -1;
 static tai_hook_ref_t SceSyscon_ksceSysconSendCommand_ref;
@@ -73,6 +66,16 @@ static tai_hook_ref_t SceLowio_kscePervasiveUartResetEnable_ref;
 static SceUID SceLowio_kscePervasiveUartResetEnable_hook_uid = -1;
 static tai_hook_ref_t SceLowio_ScePervasiveForDriver_81A155F1_ref;
 static SceUID SceLowio_ScePervasiveForDriver_81A155F1_hook_uid = -1;
+
+static SceSysconResumeContext resume_ctx;
+static uintptr_t resume_ctx_paddr;
+static unsigned int resume_ctx_buff[32];
+/*
+ * Global variables used by the resume function.
+ */
+uintptr_t linux_paddr;
+uintptr_t dtb_paddr;
+void *lvl1_pt_va;
 
 static void setup_payload(void)
 {
@@ -100,7 +103,7 @@ static void setup_payload(void)
 
 	lvl1_pt_va = get_lvl1_page_table_va();
 
-	LOG("lvl1_pt_va: %p\n", lvl1_pt_va);
+	LOG("Level 1 page table virtual address: %p\n", lvl1_pt_va);
 }
 
 static int ksceSysconResetDevice_hook_func(int type, int mode)
@@ -145,7 +148,10 @@ static int kscePervasiveUartResetEnable_hook_func(int uart_bus)
 	return 0;
 }
 
-/* Returns ScePervasiveMisc vaddr, ScePower uses it to disable the UART */
+/*
+ * Returns ScePervasiveMisc vaddr, ScePower uses it to disable the UART
+ * by writing 0x80000000 to the word 0x20 bytes past the return value.
+ */
 static void *ScePervasiveForDriver_81A155F1_hook_func(void)
 {
 	static unsigned int tmp[0x24 / 4];

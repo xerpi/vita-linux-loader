@@ -4,19 +4,24 @@
 	.text
 	.cpu cortex-a9
 
-
 	.global resume_function
 	.type resume_function, %function
 resume_function:
 	dsb
 
+	@ Set CONTEXTIDR (Context ID Register) to zero.
+	mov r3, #0
+	mcr p15, 0, r3, c13, c0, 1
+	isb
+
+	ldr r0, =sync_point_1
+	bl cpus_sync
+
 	@ Get CPU ID
 	mrc p15, 0, r0, c0, c0, 5
-	ands r0, r0, #0xF
-
-	ldr r1, =sync
+	and r0, #0xF
 	cmp r0, #0
-	bne sync_loop_1
+	bne cpu1_3_cont
 
 	@ CPU0: Identity map the scratchpad using a 1MiB section
 	ldr r2, =lvl1_pt_va
@@ -24,14 +29,11 @@ resume_function:
 	add r2, #(BOOTSTRAP_PADDR >> 20) << 2
 	ldr r3, =((BOOTSTRAP_PADDR >> 20) << 20) | 0x91402
 	str r3, [r2]
+	mcr p15, 0, r2, c7, c14, 1 @ DCCIMVAC (Data Cache line Clean and Invalidate by VA to PoC)
 	dsb
-
-	@ TLBIALL (Unified TLB Invalidate All)
-	mcr p15, 0, r0, c8, c7, 0
+	mcr p15, 0, r0, c8, c7, 0 @ TLBIALL (Unified TLB Invalidate All)
+	dsb
 	isb
-
-	mov r4, r0
-	mov r5, r1
 
 	@ Copy the Linux bootstrap payload to the scratchpad
 	ldr r0, =BOOTSTRAP_PADDR
@@ -39,54 +41,22 @@ resume_function:
 	ldr r2, =_binary_linux_bootstrap_bin_size
 	bl resume_memcpy
 
-	mov r0, r4
-	mov r1, r5
+	ldr r0, =BOOTSTRAP_PADDR
+	ldr r1, =_binary_linux_bootstrap_bin_size
+	bl dcache_clean_range
 
-	streq r0, [r1]
-
-sync_loop_1:
-	ldrb r2, [r1]
-	cmp r0, r2
-	wfene
-	bne sync_loop_1
-
-	ldrh r2, [r1]
-	adds r2, #1
-	adds r2, r2, #0x100
-	strh r2, [r1]
-	dsb
-	sev
-
-sync_loop_2:
-	ldrb r2, [r1, #1]
-	cmp r2, #4
-	wfene
-	bne sync_loop_2
-
-	@ Now all the CPUs have reached this resume function. Let's proceed.
+cpu1_3_cont:
+	ldr r0, =sync_point_2
+	bl cpus_sync
 
 	@ TLBIALL (Unified TLB Invalidate All)
 	mcr p15, 0, r0, c8, c7, 0
+	dsb
 	isb
 
 	@ ICIALLU (Icache Invalidate All to PoU)
 	mov r0, #0
 	mcr p15, 0, r0, c7, c5, 0
-	dsb
-
-	@ Dcache clean and invalidate all
-	mov r0, #0
-1:
-	mov r1, #0
-2:
-	orr r2, r1, r0
-	mcr p15, 0, r2, c7, c14, 2 @ DCCISW - Data cache clean and invalidate by set/way
-	add r1, r1, #0x40000000
-	cmp r1, #0
-	bne 2b
-	add r0, r0, #0x20
-	cmp r0, #0x2000
-	bne 2b
 	dsb
 
 	@ Get Linux parameters
@@ -99,18 +69,54 @@ sync_loop_2:
 	ldr lr, =BOOTSTRAP_PADDR
 	bx lr
 
-@ r0 = dst, r1 = src, r2 = size
-resume_memcpy:
-	mov r12, r0
+@ r0 = sync point address
+@ Uses: r0, r1, r2
+cpus_sync:
+	mrc p15, 0, r1, c0, c0, 5
+	and r1, #0xF
+	cmp r1, #0
+	streq r1, [r0]
 1:
+	ldrb r2, [r0]
+	cmp r1, r2
+	wfene
+	bne 1b
+	ldrh r2, [r0]
+	adds r2, #1
+	adds r2, r2, #0x100
+	strh r2, [r0]
+	dsb
+	sev
+1:
+	ldrb r2, [r0, #1]
+	cmp r2, #4
+	wfene
+	bne 1b
+	bx lr
+
+@ r0 = addr, r1 = size
+@ Uses: r0, r1
+dcache_clean_range:
+	add r1, r0
+	bic r0, #(32 - 1)
+	dsb
+1:
+	mcr p15, 0, r0, c7, c10, 1 @ DCCMVAC (Data Cache line Clean by VA to PoC)
+	add r0, #32
+	cmp r0, r1
+	blo 1b
+	dsb
+	bx lr
+
+@ r0 = dst, r1 = src, r2 = size
+@ Uses: r0, r1, r2, r3
+resume_memcpy:
 	ldmia r1!, {r3}
 	stmia r0!, {r3}
 	subs r2, #4
-	bne 1b
-	mov r0, r12
+	bne resume_memcpy
 	bx lr
 
-	.ltorg
-
 	.data
-sync: .word 0
+sync_point_1: .word 0
+sync_point_2: .word 0
