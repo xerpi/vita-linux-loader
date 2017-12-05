@@ -12,6 +12,9 @@ _start:
 	ldr r0, =sync_point_1
 	bl cpus_sync
 
+	@ Clean and invalidate the entire Dcache
+	bl dcache_clean_inv_all
+
 	@ Now we are in an identity-mapped region, let's disable
 	@ the MMU, the Dcache and the Icache
 	mrc p15, 0, r0, c1, c0, 0
@@ -20,8 +23,8 @@ _start:
 	bic r0, #1 << 12	@ Icache
 	mcr p15, 0, r0, c1, c0, 0
 
-	@ Clean and invalidate the entire Dcache
-	bl dcache_clean_inv_all
+	@ Invalidate the entire Dcache
+	bl dcache_inv_all
 
 	mov r0, #0
 	mcr p15, 0, r0, c7, c5, 6 @ BPIALL (Branch Predictor Invalidate All)
@@ -44,6 +47,13 @@ _start:
 cpu0_cont:
 	@ Enable the UART
 	bl uart_enable
+
+	@ L2 cache clean and invalidate all and disable
+	ldr r12, =0x16A
+	mov r0, #0
+	smc #0
+	isb
+	dsb
 
 	@ Jump to Linux!
 	mov r0, #0
@@ -97,22 +107,32 @@ uart_enable:
 
 	bx lr
 
-@ Uses: r0, r1, r2
+@ Uses: r0, r1
 dcache_clean_inv_all:
 	mov r0, #0
 1:
-	mov r1, #0
-2:
-	orr r2, r1, r0
-	mcr p15, 0, r2, c7, c14, 2 @ DCCISW (Data cache clean and invalidate by set/way)
-	add r1, r1, #0x40000000
-	cmp r1, #0
-	bne 2b
-	add r0, r0, #0x20
-	cmp r0, #0x2000
-	bne 2b
+	mcr p15, 0, r0, c7, c14, 2 @ DCCISW (Data cache clean and invalidate by set/way)
+	adds r0, r0, #0x40000000
+	bcc 1b
+	adds r0, #0x20
+	lsrs r1, r0, #0xD
+	beq 1b
 	dsb
 	bx lr
+
+@ Uses: r0, r1
+dcache_inv_all:
+	mov r0, #0
+1:
+	mcr p15, 0, r0, c7, c6, 2 @ DCISW (Data cache invalidate by set/way)
+	adds r0, r0, #0x40000000
+	bcc 1b
+	adds r0, #0x20
+	lsrs r1, r0, #0xD
+	beq 1b
+	dsb
+	bx lr
+
 
 @ r0 = sync point address
 @ Uses: r0, r1, r2
