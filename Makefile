@@ -29,7 +29,7 @@ linux_bootstrap.bin: linux_bootstrap.elf
 	$(OBJCOPY) -S -O binary $^ $@
 
 linux_bootstrap_bin.o: linux_bootstrap.bin
-	$(OBJCOPY) --input binary --output elf32-littlearm --binary-architecture arm $^ $@
+	$(OBJCOPY) -I binary -O elf32-littlearm --binary-architecture arm $^ $@
 
 $(TARGET).elf: $(TARGET_OBJS) linux_bootstrap_bin.o
 	$(CC) $(CFLAGS) $^ $(LIBS) -o $@
