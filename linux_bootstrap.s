@@ -49,11 +49,12 @@ cpu0_cont:
 	bl uart_enable
 
 	@ L2 cache clean and invalidate all and disable
-	ldr r12, =0x16A
-	mov r0, #0
-	smc #0
-	isb
-	dsb
+	@ XXX: Better to not touch the L2 for now
+	@ldr r12, =0x16A
+	@mov r0, #0
+	@smc #0
+	@isb
+	@dsb
 
 	@ Jump to Linux!
 	mov r0, #0
