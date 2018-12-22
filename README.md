@@ -2,7 +2,7 @@
 
 ## What's this?
 
-This is a kernel plugin that lets you run Linux bare-metal (i.e. without an OS beneath) payloads in ARMv7 non-secure System mode.
+This is a kernel plugin that lets you run Linux in ARMv7 non-secure System mode.
 
 ## How does it work?
 
@@ -24,4 +24,4 @@ You will need a compiled Linux kernel image (placed at `ux0:/linux/zImage`) and 
 This Linux loader will print debug info over UART0. Check [UART Console](https://wiki.henkaku.xyz/vita/UART_Console) for the location of the pins.
 
 ## Credits
-Thanks to everybody who has helped me, specially the [Team Molecule](https://twitter.com/teammolecule) (formed by [Davee](https://twitter.com/DaveeFTW), Proxima, [xyz](https://twitter.com/pomfpomfpomf3), and [YifanLu](https://twitter.com/yifanlu)), [TheFloW](https://twitter.com/theflow0), and everybody at the [HENkaku](https://discord.gg/m7MwpKA) Discord channel.
+Thanks to everybody who has helped me, specially the [Team Molecule](https://twitter.com/teammolecule) (formed by [Davee](https://twitter.com/DaveeFTW), Proxima, [xyz](https://twitter.com/pomfpomfpomf3), and [YifanLu](https://twitter.com/yifanlu)), [TheFloW](https://twitter.com/theflow0), [motoharu](https://github.com/motoharu-gosuto), and everybody at the [HENkaku](https://discord.gg/m7MwpKA) Discord channel.
