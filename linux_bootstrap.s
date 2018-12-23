@@ -1,3 +1,5 @@
+	.set CPU123_WAIT_ADDR, 0x1F007F00
+
 	.align 4
 	.text
 	.cpu cortex-a9
@@ -40,9 +42,16 @@ _start:
 	cmp r0, #0
 	beq cpu0_cont
 
-1:
-	wfene
-	b 1b
+	@ CPUs 1,2,3 will wait for an address to jump to
+	ldr r0, =CPU123_WAIT_ADDR
+	mov r1, #0
+	str r1, [r0]
+cpu123_wait:
+	wfi
+	ldr r1, [r0]
+	cmp r1, #0
+	beq cpu123_wait
+	bx r1
 
 cpu0_cont:
 	@ Enable the UART

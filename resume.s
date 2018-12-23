@@ -9,6 +9,9 @@
 resume_function:
 	dsb
 
+	@ Disable FIQs, IRQs, imprecise aborts and enter SVC mode
+	cpsid aif, #0x13
+
 	@ Set CONTEXTIDR (Context ID Register) to zero.
 	mov r3, #0
 	mcr p15, 0, r3, c13, c0, 1
