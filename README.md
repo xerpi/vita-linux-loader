@@ -17,7 +17,7 @@ Since the Linux bootstrap code is now in an identity-mapped location, it can pro
 
 ## Instructions
 
-You will need a compiled Linux kernel image (placed at `ux0:/linux/zImage`) and the corresponding DTB file (placed at `ux0:/linux/vita.dtb`).
+You will need a compiled Linux kernel image (build instructions [here](https://gist.github.com/xerpi/5c60ce951caf263fcafffb48562fe50f)), which has to be placed at `ux0:/linux/zImage`, and the corresponding DTB file, which has to be placed at `ux0:/linux/vita.dtb`.
 
 ## Debugging
 
