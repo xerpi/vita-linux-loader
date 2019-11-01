@@ -1,8 +1,13 @@
-	.set CPU123_WAIT_ADDR, 0x1F007F00
+	.set CPU123_WAIT_BASE, 0x1F007F00
 
 	.align 4
 	.text
 	.cpu cortex-a9
+
+.macro	get_cpu_id, rd
+	mrc p15, 0, \rd, c0, c0, 5
+	and \rd, #0xF
+.endm
 
 	.globl _start
 @ r0 = Linux entry paddr, r1 = DTB paddr
@@ -11,14 +16,20 @@ _start:
 	mov r9, r0
 	mov r10, r1
 
+	@ Clean jump target address (base + CPU_ID * 4)
+	ldr r0, =CPU123_WAIT_BASE
+	get_cpu_id r1
+	mov r2, #0
+	str r2, [r0, r1, lsl #2]
+
+	@ Barrier
 	ldr r0, =sync_point_1
 	bl cpus_sync
 
 	@ Clean and invalidate the entire Dcache
 	bl dcache_clean_inv_all
 
-	@ Now we are in an identity-mapped region, let's disable
-	@ the MMU, the Dcache and the Icache
+	@ Identity-mapped region, disable MMU, D/Icache
 	mrc p15, 0, r0, c1, c0, 0
 	bic r0, #1 << 0		@ MMU
 	bic r0, #1 << 2		@ Dcache
@@ -36,22 +47,19 @@ _start:
 	mcr p15, 0, r0, c8, c7, 0 @ TLBIALL (Unified TLB Invalidate All)
 	isb
 
-	@ Get CPU ID
-	mrc p15, 0, r0, c0, c0, 5
-	and r0, #0xF
+	@ Check CPU ID
+	get_cpu_id r0
 	cmp r0, #0
 	beq cpu0_cont
 
-	@ CPUs 1,2,3 will wait for an address to jump to
-	ldr r0, =CPU123_WAIT_ADDR
-	mov r1, #0
-	str r1, [r0]
+	@ CPUs 1,2,3 wait for an address to jump to
+	ldr r1, =CPU123_WAIT_BASE
 cpu123_wait:
-	wfi
-	ldr r1, [r0]
-	cmp r1, #0
+	wfe
+	ldr r2, [r1, r0, lsl #2]
+	cmp r2, #0
 	beq cpu123_wait
-	bx r1
+	bx r2
 
 cpu0_cont:
 	@ Enable the UART
@@ -147,8 +155,7 @@ dcache_inv_all:
 @ r0 = sync point address
 @ Uses: r0, r1, r2
 cpus_sync:
-	mrc p15, 0, r1, c0, c0, 5
-	and r1, #0xF
+	get_cpu_id r1
 	cmp r1, #0
 	streq r1, [r0]
 1:
