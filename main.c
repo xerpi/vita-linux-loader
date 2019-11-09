@@ -74,7 +74,7 @@ void wait_start_press()
 		sceCtrlPeekBufferPositive(0, &pad, 1);
 		if (pad.buttons & SCE_CTRL_START)
 			break;
-		sceKernelDelayThread(200 * 1000);}
+		sceKernelDelayThread(200 * 1000);
 
 	}
 }
@@ -87,7 +87,8 @@ void wait_cross_press()
 		sceCtrlPeekBufferPositive(0, &pad, 1);
 		if (pad.buttons & SCE_CTRL_CROSS)
 			break;
-		sceKernelDelayThread(200 * 1000);}
+		sceKernelDelayThread(200 * 1000);
+	}
 }
 
 
