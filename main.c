@@ -12,6 +12,7 @@
 #define printf(...) psvDebugScreenPrintf(__VA_ARGS__)
 
 #define MOD_PATH "ux0:linux/baremetal-loader.skprx"
+#define PAYLOAD_PATH "ux0:linux/payload.bin"
 
 static void wait_key_press(int is_error);
 static int are_keyfiles_present();
@@ -85,21 +86,22 @@ int are_keyfiles_present()
 	int error_count = 0;
 
 	//Checking for payload and kernel plugin on ux0:
-	SceUID payload_fd = sceIoOpen("ux0:linux/payload.bin", SCE_O_RDONLY|SCE_O_NBLOCK, 0777);
-	SceUID bootstrap_fd = sceIoOpen("ux0:linux/linux_bootstrapper.skprx", SCE_O_RDONLY|SCE_O_NBLOCK, 0777);
+	SceUID payload_fd = sceIoOpen(PAYLOAD_PATH, SCE_O_RDONLY|SCE_O_NBLOCK, 0777);
+	SceUID bootstrap_fd = sceIoOpen(MOD_PATH, SCE_O_RDONLY|SCE_O_NBLOCK, 0777);
 	if(payload_fd < 0)
-	{printf("Error : ux0:linux/payload.bin not detected!\n");
+	{printf("Error :" PAYLOAD_PATH "not detected!\n");
 	error_count++;}
 	if (bootstrap_fd < 0)
-	{printf("Error : ux0:linux/baremetal-loader.skprx not detected!\n");
+	{printf("Error :" MOD_PATH "not detected!\n");
 	error_count++;}
 
 	//Check done, we close our access to both files.
 	sceIoClose(bootstrap_fd);
 	sceIoClose(payload_fd);
 
-	//We check for zImage and DTB on the MC
-	//actually it's ux0: because of above
+	//We check for zImage and DTB on ux0: (because idk how to detect which partition M2MC is mounted on)
+	//THOSE FILES MUST BE ON THE MEMORY CARD, WHATEVER ITS MOUNTING POINT IS
+	//You can create dummy files if using an SD2Vita (use VitaShell)
 	SceUID zImage_fd = sceIoOpen("ux0:linux/zImage", SCE_O_RDONLY|SCE_O_NBLOCK, 0777);
 	SceUID DTB_fd = sceIoOpen("ux0:linux/vita.dtb", SCE_O_RDONLY|SCE_O_NBLOCK, 0777);
 
@@ -114,8 +116,9 @@ int are_keyfiles_present()
 	sceIoClose(zImage_fd);
 	sceIoClose(DTB_fd);
 
-	//if there was no errors, then it's all good.
+	//if there was any error, report so.
 	if (error_count != 0) {return 0;}
+	//else
 	printf("\nAll checks passed !\n");
 	printf("\nWarning : if you're using an SD adapter i.e. SD2Vita,\n");
 	printf("copy zImage and vita.dtb to the memory card,\n");
