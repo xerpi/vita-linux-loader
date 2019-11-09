@@ -65,20 +65,23 @@ int main(int argc, char *argv[])
 	return 0;
 }
 
-void wait_key_press(int is_error)
+void wait_start_press()
 {
 	SceCtrlData pad;
-	if (is_error==1)
-		{printf("\nPress START to exit.\n");}
-	else
-		{printf("Press START to load Linux bootstrapper.\n");}
-	while (1) {
-		sceCtrlPeekBufferPositive(0, &pad, 1);
-		if (pad.buttons & SCE_CTRL_START)
-			break;
-		sceKernelDelayThread(200 * 1000);
+	printf("\nPress START to exit.\n");
+
+
 	}
 }
+
+void wait_cross_press()
+{	
+	printf("Press X to load Linux bootstrapper.\n");
+	while (1) {
+		sceCtrlPeekBufferPositive(0, &pad, 1);
+		if (pad.buttons & SCE_CTRL_CROSS)
+			break;
+		sceKernelDelayThread(200 * 1000);
 
 
 int are_keyfiles_present()
