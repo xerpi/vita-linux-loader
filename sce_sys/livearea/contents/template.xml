@@ -10,7 +10,7 @@
   <startup-image>startup.png</startup-image>
  </gate>
 
- <frame id="frame3">
+ <frame id="frame2">
   <liveitem default="on">
    <text>
     <str>Vita Linux by Xerpi</str>
