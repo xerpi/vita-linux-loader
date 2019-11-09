@@ -14,7 +14,8 @@
 #define MOD_PATH "ux0:linux/baremetal-loader.skprx"
 #define PAYLOAD_PATH "ux0:linux/payload.bin"
 
-static void wait_key_press(int is_error);
+static void wait_start_press();
+static void wait_cross_press();
 static int are_keyfiles_present();
 
 int main(int argc, char *argv[])
@@ -30,11 +31,11 @@ int main(int argc, char *argv[])
 
 	if (are_keyfiles_present() == 0)//A file required to run Linux is not present.
 	{
-	wait_key_press(1);//Tell user to press START to exit.
+	wait_start_press();//Tell user to press START to exit.
 	return 0;
 	}
 
-	wait_key_press(0);
+	wait_cross_press();
 
 	tai_module_args_t argg;
 	argg.size = sizeof(argg);
@@ -49,7 +50,7 @@ int main(int argc, char *argv[])
 	else
 		printf("Module loaded with ID: 0x%08X\n", mod_id);
 
-	wait_key_press(1);
+	wait_start_press();
 
 	if (mod_id >= 0) {
 		tai_module_args_t argg;
@@ -69,19 +70,25 @@ void wait_start_press()
 {
 	SceCtrlData pad;
 	printf("\nPress START to exit.\n");
-
+	while (1) {
+		sceCtrlPeekBufferPositive(0, &pad, 1);
+		if (pad.buttons & SCE_CTRL_START)
+			break;
+		sceKernelDelayThread(200 * 1000);}
 
 	}
 }
 
 void wait_cross_press()
 {	
+	SceCtrlData pad;
 	printf("Press X to load Linux bootstrapper.\n");
 	while (1) {
 		sceCtrlPeekBufferPositive(0, &pad, 1);
 		if (pad.buttons & SCE_CTRL_CROSS)
 			break;
-		sceKernelDelayThread(200 * 1000);
+		sceKernelDelayThread(200 * 1000);}
+}
 
 
 int are_keyfiles_present()
