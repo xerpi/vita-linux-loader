@@ -100,10 +100,10 @@ int are_keyfiles_present()
 	SceUID payload_fd = sceIoOpen(PAYLOAD_PATH, SCE_O_RDONLY|SCE_O_NBLOCK, 0777);
 	SceUID bootstrap_fd = sceIoOpen(MOD_PATH, SCE_O_RDONLY|SCE_O_NBLOCK, 0777);
 	if(payload_fd < 0)
-	{printf("Error :" PAYLOAD_PATH "not detected!\n");
+	{printf("Error : " PAYLOAD_PATH " not detected!\n");
 	error_count++;}
 	if (bootstrap_fd < 0)
-	{printf("Error :" MOD_PATH "not detected!\n");
+	{printf("Error : " MOD_PATH " not detected!\n");
 	error_count++;}
 
 	//Check done, we close our access to both files.
