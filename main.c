@@ -1,374 +1,138 @@
+/*
+ * Simple kplugin loader by xerpi
+ *Linux theming and file checks by CreepNT
+ */
+
 #include <stdio.h>
-#include <string.h>
-#include <psp2kern/kernel/cpu.h>
-#include <psp2kern/kernel/modulemgr.h>
-#include <psp2kern/kernel/threadmgr.h>
-#include <psp2kern/kernel/sysmem.h>
-#include <psp2kern/lowio/pervasive.h>
-#include <psp2kern/io/fcntl.h>
-#include <psp2kern/display.h>
-#include <psp2kern/power.h>
-#include <psp2kern/syscon.h>
-#include <psp2kern/uart.h>
 #include <taihen.h>
+#include <psp2/ctrl.h>
+#include <psp2/io/fcntl.h>
+#include "debugScreen.h"
 
-#define LOG(s, ...) \
-	do { \
-		char _buffer[256]; \
-		snprintf(_buffer, sizeof(_buffer), s, ##__VA_ARGS__); \
-		uart0_print(_buffer); \
-	} while (0)
+#define printf(...) psvDebugScreenPrintf(__VA_ARGS__)
 
-void _start() __attribute__ ((weak, alias ("module_start")));
+#define MOD_PATH "ux0:linux/baremetal-loader.skprx"
+#define PAYLOAD_PATH "ux0:linux/payload.bin"
 
-#define ALIGN(x, a)	(((x) + ((a) - 1)) & ~((a) - 1))
+static void wait_start_press();
+static void wait_cross_press();
+static int are_keyfiles_present();
 
-#define LINUX_FILENAME	"ux0:/linux/zImage"
-#define DTB_FILENAME	"ux0:/linux/vita.dtb"
-
-typedef struct SceSysconResumeContext {
-	unsigned int size;
-	unsigned int unk;
-	unsigned int buff_vaddr;
-	unsigned int resume_func_vaddr;
-	unsigned int SCTLR;
-	unsigned int ACTLR;
-	unsigned int CPACR;
-	unsigned int TTBR0;
-	unsigned int TTBR1;
-	unsigned int TTBCR;
-	unsigned int DACR;
-	unsigned int PRRR;
-	unsigned int NMRR;
-	unsigned int VBAR;
-	unsigned int CONTEXTIDR;
-	unsigned int TPIDRURW;
-	unsigned int TPIDRURO;
-	unsigned int TPIDRPRW;
-	unsigned int unk2[6];
-	unsigned long long time;
-} SceSysconResumeContext;
-
-extern void resume_function(void);
-
-static unsigned int *get_lvl1_page_table_va(void);
-static int find_paddr(uint32_t paddr, const void *vaddr_start, unsigned int range, void **found_vaddr);
-static int alloc_phycont(unsigned int size, unsigned int alignment,  SceUID *uid, void **addr);
-static int load_file_phycont(const char *path, SceUID *uid, void **addr, unsigned int *size);
-static void uart0_print(const char *str);
-
-static tai_hook_ref_t SceSyscon_ksceSysconResetDevice_ref;
-static SceUID SceSyscon_ksceSysconResetDevice_hook_uid = -1;
-static tai_hook_ref_t SceSyscon_ksceSysconSendCommand_ref;
-static SceUID SceSyscon_ksceSysconSendCommand_hook_uid = -1;
-
-static tai_hook_ref_t SceLowio_kscePervasiveUartResetEnable_ref;
-static SceUID SceLowio_kscePervasiveUartResetEnable_hook_uid = -1;
-static tai_hook_ref_t SceLowio_ScePervasiveForDriver_81A155F1_ref;
-static SceUID SceLowio_ScePervasiveForDriver_81A155F1_hook_uid = -1;
-
-static SceSysconResumeContext resume_ctx;
-static uintptr_t resume_ctx_paddr;
-static unsigned int resume_ctx_buff[32];
-/*
- * Global variables used by the resume function.
- */
-uintptr_t linux_paddr;
-uintptr_t dtb_paddr;
-void *lvl1_pt_va;
-
-static void setup_payload(void)
-{
-	memset(&resume_ctx, 0, sizeof(resume_ctx));
-	resume_ctx.size = sizeof(resume_ctx);
-	resume_ctx.buff_vaddr = (unsigned int )resume_ctx_buff;
-	resume_ctx.resume_func_vaddr = (unsigned int)&resume_function;
-	asm volatile("mrc p15, 0, %0, c1, c0, 0\n\t" : "=r"(resume_ctx.SCTLR));
-	asm volatile("mrc p15, 0, %0, c1, c0, 1\n\t" : "=r"(resume_ctx.ACTLR));
-	asm volatile("mrc p15, 0, %0, c1, c0, 2\n\t" : "=r"(resume_ctx.CPACR));
-	asm volatile("mrc p15, 0, %0, c2, c0, 0\n\t" : "=r"(resume_ctx.TTBR0));
-	asm volatile("mrc p15, 0, %0, c2, c0, 1\n\t" : "=r"(resume_ctx.TTBR1));
-	asm volatile("mrc p15, 0, %0, c2, c0, 2\n\t" : "=r"(resume_ctx.TTBCR));
-	asm volatile("mrc p15, 0, %0, c3, c0, 0\n\t" : "=r"(resume_ctx.DACR));
-	asm volatile("mrc p15, 0, %0, c10, c2, 0\n\t" : "=r"(resume_ctx.PRRR));
-	asm volatile("mrc p15, 0, %0, c10, c2, 1\n\t" : "=r"(resume_ctx.NMRR));
-	asm volatile("mrc p15, 0, %0, c12, c0, 0\n\t" : "=r"(resume_ctx.VBAR));
-	asm volatile("mrc p15, 0, %0, c13, c0, 1\n\t" : "=r"(resume_ctx.CONTEXTIDR));
-	asm volatile("mrc p15, 0, %0, c13, c0, 2\n\t" : "=r"(resume_ctx.TPIDRURW));
-	asm volatile("mrc p15, 0, %0, c13, c0, 3\n\t" : "=r"(resume_ctx.TPIDRURO));
-	asm volatile("mrc p15, 0, %0, c13, c0, 4\n\t" : "=r"(resume_ctx.TPIDRPRW));
-	resume_ctx.time = ksceKernelGetSystemTimeWide();
-
-	ksceKernelCpuDcacheAndL2WritebackRange(&resume_ctx, sizeof(resume_ctx));
-
-	lvl1_pt_va = get_lvl1_page_table_va();
-
-	LOG("Level 1 page table virtual address: %p\n", lvl1_pt_va);
-}
-
-static int ksceSysconResetDevice_hook_func(int type, int mode)
-{
-	LOG("ksceSysconResetDevice(0x%08X, 0x%08X)\n", type, mode);
-
-	/*
-	 * The Vita OS thinks it's about to poweroff, but we will instead
-	 * setup the payload and trigger a soft reset.
-	 */
-	if (type == SCE_SYSCON_RESET_TYPE_POWEROFF) {
-		setup_payload();
-		type = SCE_SYSCON_RESET_TYPE_SOFT_RESET;
-	}
-
-	LOG("Resetting the device!\n");
-
-	ksceKernelCpuDcacheWritebackInvalidateAll();
-	ksceKernelCpuIcacheInvalidateAll();
-
-	return TAI_CONTINUE(int, SceSyscon_ksceSysconResetDevice_ref, type, mode);
-}
-
-static int ksceSysconSendCommand_hook_func(int cmd, void *buffer, unsigned int size)
-{
-	LOG("ksceSysconSendCommand(0x%08X, %p, 0x%08X)\n", cmd, buffer, size);
-
-	/*
-	 * Change the resume context to ours.
-	 */
-	if (cmd == SCE_SYSCON_CMD_RESET_DEVICE && size == 4)
-		buffer = &resume_ctx_paddr;
-
-	return TAI_CONTINUE(int, SceSyscon_ksceSysconSendCommand_ref, cmd, buffer, size);
-}
-
-static int kscePervasiveUartResetEnable_hook_func(int uart_bus)
-{
-	/*
-	 * We want to keep the UART enabled...
-	 */
-	return 0;
-}
-
-/*
- * Returns ScePervasiveMisc vaddr, ScePower uses it to disable the UART
- * by writing 0x80000000 to the word 0x20 bytes past the return value.
- */
-static void *ScePervasiveForDriver_81A155F1_hook_func(void)
-{
-	static unsigned int tmp[0x24 / 4];
-	LOG("ScePervasiveForDriver_81A155F1()\n");
-	return tmp;
-}
-
-int module_start(SceSize argc, const void *args)
+int main(int argc, char *argv[])
 {
 	int ret;
-	SceUID linux_uid;
-	SceUID dtb_uid;
-	void *linux_vaddr;
-	void *dtb_vaddr;
-	unsigned int linux_size;
-	unsigned int dtb_size;
+	SceUID mod_id;
 
-	kscePervasiveUartClockEnable(0);
-	kscePervasiveUartResetDisable(0);
+	psvDebugScreenInit();
 
-	ksceUartInit(0);
+	printf("Plugin Loader by xerpi\n");
+	printf("Linux theming and 'enhancements' by CreepNT\n");
+	printf("(he's the one to blame if it breaks :p)\n\n");
 
-	LOG("Linux loader by xerpi\n");
-
-	/*
-	 * Load the Linux files (kernel image and device tree blob).
-	 */
-	ret = load_file_phycont(LINUX_FILENAME, &linux_uid, &linux_vaddr, &linux_size);
-	if (ret < 0) {
-		LOG("Error loading " LINUX_FILENAME ": 0x%08X\n", ret);
-		goto error_load_linux_image;
+	if (are_keyfiles_present() == 0)//A file required to run Linux is not present.
+	{
+	wait_start_press();//Tell user to press START to exit.
+	return 0;
 	}
 
-	ksceKernelGetPaddr(linux_vaddr, &linux_paddr);
+	wait_cross_press();
 
-	LOG("Linux memory UID: 0x%08X\n", linux_uid);
-	LOG("Linux load vaddr: 0x%08X\n", (unsigned int)linux_vaddr);
-	LOG("Linux load paddr: 0x%08X\n", linux_paddr);
-	LOG("Linux size: 0x%08X\n", linux_size);
-	LOG("\n");
+	tai_module_args_t argg;
+	argg.size = sizeof(argg);
+	argg.pid = KERNEL_PID;
+	argg.args = 0;
+	argg.argp = NULL;
+	argg.flags = 0;
+	mod_id = taiLoadStartKernelModuleForUser(MOD_PATH, &argg);
 
-	ret = load_file_phycont(DTB_FILENAME, &dtb_uid, &dtb_vaddr, &dtb_size);
-	if (ret < 0) {
-		LOG("Error loading " DTB_FILENAME ": 0x%08X\n", ret);
-		goto error_load_dtb;
-	}
+	if (mod_id < 0)
+		printf("Error loading " MOD_PATH ": 0x%08X\n", mod_id);
+	else
+		printf("Module loaded with ID: 0x%08X\n", mod_id);
 
-	ksceKernelGetPaddr(dtb_vaddr, &dtb_paddr);
+	wait_start_press();
 
-	LOG("DTB memory UID: 0x%08X\n", dtb_uid);
-	LOG("DTB load vaddr: 0x%08X\n", (unsigned int)dtb_vaddr);
-	LOG("DTB load paddr: 0x%08X\n", dtb_paddr);
-	LOG("DTB size: 0x%08X\n", dtb_size);
-	LOG("\n");
-
-	SceSyscon_ksceSysconResetDevice_hook_uid = taiHookFunctionExportForKernel(KERNEL_PID,
-		&SceSyscon_ksceSysconResetDevice_ref, "SceSyscon", 0x60A35F64,
-		0x8A95D35C, ksceSysconResetDevice_hook_func);
-
-	SceSyscon_ksceSysconSendCommand_hook_uid = taiHookFunctionExportForKernel(KERNEL_PID,
-		&SceSyscon_ksceSysconSendCommand_ref, "SceSyscon", 0x60A35F64,
-		0xE26488B9, ksceSysconSendCommand_hook_func);
-
-	SceLowio_kscePervasiveUartResetEnable_hook_uid = taiHookFunctionExportForKernel(KERNEL_PID,
-		&SceLowio_kscePervasiveUartResetEnable_ref, "SceLowio", 0xE692C727,
-		0x788B6C61, kscePervasiveUartResetEnable_hook_func);
-
-	SceLowio_ScePervasiveForDriver_81A155F1_hook_uid = taiHookFunctionExportForKernel(KERNEL_PID,
-		&SceLowio_ScePervasiveForDriver_81A155F1_ref, "SceLowio", 0xE692C727,
-		0x81A155F1, ScePervasiveForDriver_81A155F1_hook_func);
-
-	LOG("Hooks installed.\n");
-
-	ksceKernelGetPaddr(&resume_ctx, &resume_ctx_paddr);
-	LOG("Resume context pa: 0x%08X\n", resume_ctx_paddr);
-
-	LOG("Requesting standby...\n");
-
-	kscePowerRequestStandby();
-
-	return SCE_KERNEL_START_SUCCESS;
-
-error_load_dtb:
-	ksceKernelFreeMemBlock(linux_uid);
-error_load_linux_image:
-	return SCE_KERNEL_START_FAILED;
-}
-
-int module_stop(SceSize argc, const void *args)
-{
-	/*
-	 * This is very important: it avoids the freeing
-	 * of the resources allocated by the module.
-	 */
-	return SCE_KERNEL_STOP_CANCEL;
-}
-
-unsigned int *get_lvl1_page_table_va(void)
-{
-	uint32_t ttbcr;
-	uint32_t ttbr0;
-	uint32_t ttbcr_n;
-	uint32_t lvl1_pt_pa;
-	void *lvl1_pt_va;
-
-	asm volatile(
-		"mrc p15, 0, %0, c2, c0, 2\n\t"
-		"mrc p15, 0, %1, c2, c0, 0\n\t"
-		: "=r"(ttbcr), "=r"(ttbr0));
-
-	ttbcr_n = ttbcr & 7;
-	lvl1_pt_pa = ttbr0 & ~((1 << (14 - ttbcr_n)) - 1);
-
-	if (!find_paddr(lvl1_pt_pa, (void *)0, 0xFFFFFFFF, &lvl1_pt_va))
-		return NULL;
-
-	return lvl1_pt_va;
-}
-
-int find_paddr(uint32_t paddr, const void *vaddr_start, unsigned int range, void **found_vaddr)
-{
-	const unsigned int step = 0x1000;
-	void *vaddr = (void *)vaddr_start;
-	const void *vaddr_end = vaddr_start + range;
-
-	for (; vaddr < vaddr_end; vaddr += step) {
-		uintptr_t cur_paddr;
-
-		if (ksceKernelGetPaddr(vaddr, &cur_paddr) < 0)
-			continue;
-
-		if ((cur_paddr & ~(step - 1)) == (paddr & ~(step - 1))) {
-			if (found_vaddr)
-				*found_vaddr = vaddr;
-			return 1;
-		}
+	if (mod_id >= 0) {
+		tai_module_args_t argg;
+		argg.size = sizeof(argg);
+		argg.pid = KERNEL_PID;
+		argg.args = 0;
+		argg.argp = NULL;
+		argg.flags = 0;
+		ret = taiStopUnloadKernelModuleForUser(mod_id, &argg, NULL, NULL);
+		printf("Stop unload module: 0x%08X\n", ret);
 	}
 
 	return 0;
 }
 
-int alloc_phycont(unsigned int size, unsigned int alignment, SceUID *uid, void **addr)
+void wait_start_press()
 {
-	int ret;
-	SceUID mem_uid;
-	void *mem_addr;
-	unsigned int aligned_size = ALIGN(size, 0x1000);
+	SceCtrlData pad;
+	printf("\nPress START to exit.\n");
+	while (1) {
+		sceCtrlPeekBufferPositive(0, &pad, 1);
+		if (pad.buttons & SCE_CTRL_START)
+			break;
+		sceKernelDelayThread(200 * 1000);
 
-	SceKernelAllocMemBlockKernelOpt opt;
-	memset(&opt, 0, sizeof(opt));
-	opt.size = sizeof(opt);
-	opt.attr = SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_PHYCONT | SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_ALIGNMENT;
-	opt.alignment = ALIGN(alignment, 0x1000);
-	mem_uid = ksceKernelAllocMemBlock("phycont", 0x30808006, aligned_size, &opt);
-	if (mem_uid < 0)
-		return mem_uid;
-
-	ret = ksceKernelGetMemBlockBase(mem_uid, &mem_addr);
-	if (ret < 0) {
-		ksceKernelFreeMemBlock(mem_uid);
-		return ret;
 	}
-
-	ksceKernelCpuDcacheAndL2InvalidateRange(mem_addr, aligned_size);
-	ksceKernelCpuIcacheInvalidateRange(mem_addr, aligned_size);
-
-	if (uid)
-		*uid = mem_uid;
-	if (addr)
-		*addr = mem_addr;
-
-	return 0;
 }
 
-int load_file_phycont(const char *path, SceUID *uid, void **addr, unsigned int *size)
-{
-	int ret;
-	SceUID fd;
-	SceUID mem_uid;
-	void *mem_addr;
-	unsigned int file_size;
-	unsigned int aligned_size;
-
-	fd = ksceIoOpen(path, SCE_O_RDONLY, 0);
-	if (fd < 0)
-		return fd;
-
-	file_size = ksceIoLseek(fd, 0, SCE_SEEK_END);
-	aligned_size = ALIGN(file_size, 4096);
-
-	ret = alloc_phycont(aligned_size, 4096, &mem_uid, &mem_addr);
-	if (ret < 0) {
-		ksceIoClose(fd);
-		return ret;
+void wait_cross_press()
+{	
+	SceCtrlData pad;
+	printf("Press X to load Linux bootstrapper.\n");
+	while (1) {
+		sceCtrlPeekBufferPositive(0, &pad, 1);
+		if (pad.buttons & SCE_CTRL_CROSS)
+			break;
+		sceKernelDelayThread(200 * 1000);
 	}
-
-	ksceIoLseek(fd, 0, SCE_SEEK_SET);
-	ksceIoRead(fd, mem_addr, file_size);
-
-	ksceIoClose(fd);
-
-	if (uid)
-		*uid = mem_uid;
-	if (addr)
-		*addr = mem_addr;
-	if (size)
-		*size = file_size;
-
-	return 0;
 }
 
-static void uart0_print(const char *str)
+
+int are_keyfiles_present()
 {
-	while (*str) {
-		ksceUartWrite(0, *str);
-		if (*str == '\n')
-			ksceUartWrite(0, '\r');
-		str++;
-	}
+	int error_count = 0;
+
+	//Checking for payload and kernel plugin on ux0:
+	SceUID payload_fd = sceIoOpen(PAYLOAD_PATH, SCE_O_RDONLY|SCE_O_NBLOCK, 0777);
+	SceUID bootstrap_fd = sceIoOpen(MOD_PATH, SCE_O_RDONLY|SCE_O_NBLOCK, 0777);
+	if(payload_fd < 0)
+	{printf("Error : " PAYLOAD_PATH " not detected!\n");
+	error_count++;}
+	if (bootstrap_fd < 0)
+	{printf("Error : " MOD_PATH " not detected!\n");
+	error_count++;}
+
+	//Check done, we close our access to both files.
+	sceIoClose(bootstrap_fd);
+	sceIoClose(payload_fd);
+
+	//We check for zImage and DTB on ux0: (because idk how to detect which partition M2MC is mounted on)
+	//THOSE FILES MUST BE ON THE MEMORY CARD, WHATEVER ITS MOUNTING POINT IS
+	//You can create dummy files if using an SD2Vita (use VitaShell)
+	SceUID zImage_fd = sceIoOpen("ux0:linux/zImage", SCE_O_RDONLY|SCE_O_NBLOCK, 0777);
+	SceUID DTB_fd = sceIoOpen("ux0:linux/vita.dtb", SCE_O_RDONLY|SCE_O_NBLOCK, 0777);
+
+	if (zImage_fd < 0){
+	printf("Error : ux0:linux/zImage not detected !\n");
+	error_count++;}
+	if (DTB_fd < 0)
+	{printf("Error : ux0:linux/vita.dtb not detected !\n");
+	error_count++;}
+
+	//Check done, we close access.
+	sceIoClose(zImage_fd);
+	sceIoClose(DTB_fd);
+
+	//if there was any error, report so.
+	if (error_count != 0) {return 0;}
+	//else
+	printf("\nAll checks passed !\n");
+	printf("\nWarning : if you're using an SD adapter i.e. SD2Vita,\n");
+	printf("copy zImage and vita.dtb to the memory card,\n");
+	printf("or your Vita will crash when booting Linux!\n\n");
+	return 1;
 }
