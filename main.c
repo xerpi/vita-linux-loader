@@ -8,6 +8,7 @@
 #include <psp2kern/io/fcntl.h>
 #include <psp2kern/display.h>
 #include <psp2kern/power.h>
+#include <psp2kern/sblaimgr.h>
 #include <psp2kern/syscon.h>
 #include <psp2kern/uart.h>
 #include <taihen.h>
@@ -23,8 +24,12 @@ void _start() __attribute__ ((weak, alias ("module_start")));
 
 #define ALIGN(x, a)	(((x) + ((a) - 1)) & ~((a) - 1))
 
-#define LINUX_FILENAME	"ux0:/linux/zImage"
-#define DTB_FILENAME	"ux0:/linux/vita.dtb"
+#define LINUX_DIR	"ux0:/linux/"
+
+#define ZIMAGE 		LINUX_DIR "zImage"
+#define VITA1000_DTB 	LINUX_DIR "vita1000.dtb"
+#define VITA2000_DTB 	LINUX_DIR "vita2000.dtb"
+#define PSTV_DTB 	LINUX_DIR "pstv.dtb"
 
 typedef struct SceSysconResumeContext {
 	unsigned int size;
@@ -162,6 +167,7 @@ static void *ScePervasiveForDriver_81A155F1_hook_func(void)
 int module_start(SceSize argc, const void *args)
 {
 	int ret;
+	char *dtb;
 	SceUID linux_uid;
 	SceUID dtb_uid;
 	void *linux_vaddr;
@@ -179,28 +185,41 @@ int module_start(SceSize argc, const void *args)
 	/*
 	 * Load the Linux files (kernel image and device tree blob).
 	 */
-	ret = load_file_phycont(LINUX_FILENAME, &linux_uid, &linux_vaddr, &linux_size);
+	ret = load_file_phycont(ZIMAGE, &linux_uid, &linux_vaddr, &linux_size);
 	if (ret < 0) {
-		LOG("Error loading " LINUX_FILENAME ": 0x%08X\n", ret);
+		LOG("Error loading " ZIMAGE ": 0x%08X\n", ret);
 		goto error_load_linux_image;
 	}
 
 	ksceKernelGetPaddr(linux_vaddr, &linux_paddr);
 
+	LOG("Linux image: '%s'\n", ZIMAGE);
 	LOG("Linux memory UID: 0x%08X\n", linux_uid);
 	LOG("Linux load vaddr: 0x%08X\n", (unsigned int)linux_vaddr);
 	LOG("Linux load paddr: 0x%08X\n", linux_paddr);
 	LOG("Linux size: 0x%08X\n", linux_size);
 	LOG("\n");
 
-	ret = load_file_phycont(DTB_FILENAME, &dtb_uid, &dtb_vaddr, &dtb_size);
+	if (ksceSblAimgrIsVITA()) {
+		dtb = VITA1000_DTB;
+	} else if (0) {
+		dtb = VITA2000_DTB;
+	} else if (ksceSblAimgrIsDolce()) {
+		dtb = PSTV_DTB;
+	} else {
+		LOG("Unsupported Vita model.\n");
+		goto error_load_dtb;
+	}
+
+	ret = load_file_phycont(dtb, &dtb_uid, &dtb_vaddr, &dtb_size);
 	if (ret < 0) {
-		LOG("Error loading " DTB_FILENAME ": 0x%08X\n", ret);
+		LOG("Error loading %s: 0x%08X\n", dtb, ret);
 		goto error_load_dtb;
 	}
 
 	ksceKernelGetPaddr(dtb_vaddr, &dtb_paddr);
 
+	LOG("DTB: '%s'\n", dtb);
 	LOG("DTB memory UID: 0x%08X\n", dtb_uid);
 	LOG("DTB load vaddr: 0x%08X\n", (unsigned int)dtb_vaddr);
 	LOG("DTB load paddr: 0x%08X\n", dtb_paddr);

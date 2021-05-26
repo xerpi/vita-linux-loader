@@ -5,7 +5,8 @@ BOOTSTRAP_OBJS = linux_bootstrap.o
 LIBS =	-ltaihenForKernel_stub -lSceSysclibForDriver_stub -lSceSysmemForDriver_stub \
 	-lSceSysmemForKernel_stub -lSceThreadmgrForDriver_stub -lSceCpuForKernel_stub \
 	-lSceCpuForDriver_stub -lSceUartForKernel_stub -lScePervasiveForDriver_stub \
-	-lSceSysconForDriver_stub -lScePowerForDriver_stub -lSceIofilemgrForDriver_stub
+	-lSceSysconForDriver_stub -lScePowerForDriver_stub -lSceIofilemgrForDriver_stub \
+	-lSceSblAIMgrForDriver_stub
 
 PREFIX  = arm-vita-eabi
 CC      = $(PREFIX)-gcc
