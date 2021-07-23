@@ -317,14 +317,13 @@ int alloc_phycont(unsigned int size, unsigned int alignment, SceUID *uid, void *
 	int ret;
 	SceUID mem_uid;
 	void *mem_addr;
-	unsigned int aligned_size = ALIGN(size, 0x1000);
 
 	SceKernelAllocMemBlockKernelOpt opt;
 	memset(&opt, 0, sizeof(opt));
 	opt.size = sizeof(opt);
 	opt.attr = SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_PHYCONT | SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_ALIGNMENT;
 	opt.alignment = ALIGN(alignment, 0x1000);
-	mem_uid = ksceKernelAllocMemBlock("phycont", 0x30808006, aligned_size, &opt);
+	mem_uid = ksceKernelAllocMemBlock("phycont", 0x30808006, ALIGN(size, 0x1000), &opt);
 	if (mem_uid < 0)
 		return mem_uid;
 
@@ -333,9 +332,6 @@ int alloc_phycont(unsigned int size, unsigned int alignment, SceUID *uid, void *
 		ksceKernelFreeMemBlock(mem_uid);
 		return ret;
 	}
-
-	ksceKernelCpuDcacheAndL2InvalidateRange(mem_addr, aligned_size);
-	ksceKernelCpuIcacheInvalidateRange(mem_addr, aligned_size);
 
 	if (uid)
 		*uid = mem_uid;
@@ -369,6 +365,9 @@ int load_file_phycont(const char *path, SceUID *uid, void **addr, unsigned int *
 
 	ksceIoLseek(fd, 0, SCE_SEEK_SET);
 	ksceIoRead(fd, mem_addr, file_size);
+
+	ksceKernelCpuDcacheAndL2WritebackRange(mem_addr, aligned_size);
+	ksceKernelCpuIcacheInvalidateRange(mem_addr, aligned_size);
 
 	ksceIoClose(fd);
 
